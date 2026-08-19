@@ -1,172 +1,53 @@
-import React, { useState, useEffect } from 'react';
-import { Trash2, Plus } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import db from '../../db/database';
 import Modal from '../common/Modal';
 import { useToast } from '../common/Toast';
+import { formatCurrency } from '../../utils/formatters';
+import { calculateModifierOptionCost, calculateProductCost, profitMargin, recalculateProductCost } from '../../utils/costing';
+import { useAuthStore } from '../../stores/authStore';
+import { writeAudit } from '../../utils/audit';
 
 export default function RecipeModal({ product, onClose }) {
-  const [ingredients, setIngredients] = useState([]);
-  const [inventory, setInventory] = useState([]);
-  
-  const [linkedIngredients, setLinkedIngredients] = useState([]);
-  const [linkedInventory, setLinkedInventory] = useState([]);
-
-  // Form states
-  const [ingForm, setIngForm] = useState({ id: '', qty: '' });
-  const [invForm, setInvForm] = useState({ id: '', qty: '' });
-  
+  const [ingredients, setIngredients] = useState([]); const [inventory, setInventory] = useState([]); const [ingredientLinks, setIngredientLinks] = useState([]); const [inventoryLinks, setInventoryLinks] = useState([]);
+  const [groups, setGroups] = useState([]); const [options, setOptions] = useState([]); const [optionCosts, setOptionCosts] = useState({}); const [cost, setCost] = useState(0);
+  const [ingredientForm, setIngredientForm] = useState({ id: '', quantity: '' }); const [inventoryForm, setInventoryForm] = useState({ id: '', quantity: '' });
+  const [groupForm, setGroupForm] = useState({ name: '', required: false, selectionMode: 'single', minSelections: 0, maxSelections: 1 }); const [optionForms, setOptionForms] = useState({}); const [optionRecipe, setOptionRecipe] = useState(null); const [optionLinkForm, setOptionLinkForm] = useState({ kind: 'ingredient', id: '', quantity: '' });
   const toast = useToast();
-
-  useEffect(() => {
-    loadOptions();
-    loadLinks();
-  }, [product.id]);
-
-  async function loadOptions() {
-    setIngredients(await db.ingredients.toArray());
-    setInventory(await db.inventory.toArray());
+  const staff = useAuthStore(state => state.currentStaff);
+  async function load() {
+    const [ings, inv, pings, pinv, modifierGroups, modifierOptions] = await Promise.all([db.ingredients.toArray(), db.inventory.toArray(), db.productIngredients.where('productId').equals(product.id).toArray(), db.productInventory.where('productId').equals(product.id).toArray(), db.modifierGroups.query({ filters: [{ field: 'productId', op: 'eq', value: product.id }], orderBy: 'sortOrder' }), db.modifierOptions.toArray()]);
+    setIngredients(ings); setInventory(inv); setIngredientLinks(pings); setInventoryLinks(pinv); setGroups(modifierGroups); const relevant = modifierOptions.filter(option => modifierGroups.some(group => group.id === option.groupId)); setOptions(relevant);
+    const costs = {}; for (const option of relevant) costs[option.id] = await calculateModifierOptionCost(option.id); setOptionCosts(costs); setCost(await calculateProductCost(product.id));
   }
+  useEffect(() => { load(); }, [product.id]);
+  async function refreshCost() { await recalculateProductCost(product.id); await load(); }
+  async function addBase(kind) { const form = kind === 'ingredient' ? ingredientForm : inventoryForm; if (!form.id || Number(form.quantity) <= 0) return; const table = kind === 'ingredient' ? db.productIngredients : db.productInventory; const data = { productId: product.id, [kind === 'ingredient' ? 'ingredientId' : 'inventoryId']: Number(form.id), quantity: Number(form.quantity) }; const id = await table.add(data); await writeAudit({ action: 'CREATE', entityType: 'recipe', entity: product.name, entityId: id, staff, afterState: { kind, ...data } }); kind === 'ingredient' ? setIngredientForm({ id: '', quantity: '' }) : setInventoryForm({ id: '', quantity: '' }); await refreshCost(); }
+  async function removeBase(kind, id) { await (kind === 'ingredient' ? db.productIngredients : db.productInventory).delete(id); await refreshCost(); }
+  async function addGroup() { if (!groupForm.name.trim()) return; const min = groupForm.required ? Math.max(1, Number(groupForm.minSelections)) : Number(groupForm.minSelections); const max = groupForm.selectionMode === 'single' ? 1 : Math.max(min || 1, Number(groupForm.maxSelections)); const data = { productId: product.id, name: groupForm.name.trim(), required: groupForm.required, selectionMode: groupForm.selectionMode, minSelections: min, maxSelections: max, sortOrder: groups.length + 1, active: true }; const id = await db.modifierGroups.add(data); await writeAudit({ action: 'CREATE', entityType: 'modifier_group', entity: data.name, entityId: id, staff, afterState: data }); setGroupForm({ name: '', required: false, selectionMode: 'single', minSelections: 0, maxSelections: 1 }); await load(); }
+  async function addOption(group) { const form = optionForms[group.id] || {}; if (!form.name?.trim()) return; const data = { groupId: group.id, name: form.name.trim(), priceDelta: Number(form.priceDelta || 0), sortOrder: options.filter(row => row.groupId === group.id).length + 1, active: true }; const id = await db.modifierOptions.add(data); await writeAudit({ action: 'CREATE', entityType: 'modifier_option', entity: data.name, entityId: id, staff, afterState: data }); setOptionForms(current => ({ ...current, [group.id]: {} })); await load(); }
+  async function editGroup(group) { const name = window.prompt('Group name', group.name)?.trim(); if (!name) return; const selectionMode = window.prompt('Selection mode: single or multiple', group.selectionMode)?.trim().toLowerCase(); if (!['single','multiple'].includes(selectionMode)) return toast('Selection mode must be single or multiple.', 'error'); const required = window.prompt('Required? yes or no', group.required ? 'yes' : 'no')?.trim().toLowerCase() === 'yes'; const minSelections = required ? Math.max(1, Number(window.prompt('Minimum selections', group.minSelections) || group.minSelections)) : Math.max(0, Number(window.prompt('Minimum selections', group.minSelections) || 0)); const maxSelections = selectionMode === 'single' ? 1 : Math.max(minSelections || 1, Number(window.prompt('Maximum selections', group.maxSelections) || group.maxSelections)); const after = { ...group, name, selectionMode, required, minSelections, maxSelections }; await db.modifierGroups.update(group.id, after); await writeAudit({ action: 'UPDATE', entityType: 'modifier_group', entity: name, entityId: group.id, staff, beforeState: group, afterState: after }); await load(); }
+  async function editOption(option) { const name = window.prompt('Option name', option.name)?.trim(); if (!name) return; const priceDelta = Number(window.prompt('Additional selling price', option.priceDelta) ?? option.priceDelta); if (!Number.isFinite(priceDelta)) return; const after = { ...option, name, priceDelta }; await db.modifierOptions.update(option.id, after); await writeAudit({ action: 'UPDATE', entityType: 'modifier_option', entity: name, entityId: option.id, staff, beforeState: option, afterState: after }); await load(); }
+  async function addOptionLink() { if (!optionRecipe || !optionLinkForm.id || Number(optionLinkForm.quantity) <= 0) return; const isIngredient = optionLinkForm.kind === 'ingredient'; await (isIngredient ? db.modifierOptionIngredients : db.modifierOptionInventory).add({ optionId: optionRecipe.id, [isIngredient ? 'ingredientId' : 'inventoryId']: Number(optionLinkForm.id), quantity: Number(optionLinkForm.quantity) }); setOptionLinkForm({ kind: 'ingredient', id: '', quantity: '' }); await load(); }
+  const ingredientById = id => ingredients.find(row => row.id === id); const inventoryById = id => inventory.find(row => row.id === id);
+  return <Modal title={`Recipe & Modifiers: ${product.name}`} large onClose={onClose} footer={<button className="btn btn-primary" onClick={onClose}>Done</button>}>
+    <div className="stat-grid"><div className="stat-card"><span className="stat-label">Base COGS</span><strong className="stat-value">{formatCurrency(cost)}</strong></div><div className="stat-card"><span className="stat-label">Base Margin</span><strong className="stat-value">{profitMargin(product.price, cost) === null ? 'N/A' : `${profitMargin(product.price, cost).toFixed(2)}%`}</strong></div></div>
+    <div className="recipe-columns"><section><h3>Ingredients</h3><table className="data-table"><thead><tr><th>Ingredient</th><th>Qty</th><th>Unit cost</th><th>Extended</th><th/></tr></thead><tbody>{ingredientLinks.map(link => { const row = ingredientById(link.ingredientId); return <tr key={link.id}><td>{row?.name}</td><td>{Number(link.quantity).toFixed(4)} {row?.unit}</td><td>{formatCurrency(row?.unitCost)}</td><td>{formatCurrency(Number(link.quantity) * Number(row?.unitCost))}</td><td><button className="btn btn-ghost btn-icon" onClick={() => removeBase('ingredient', link.id)}><Trash2 size={14}/></button></td></tr>; })}</tbody></table><div className="form-row"><select className="form-select" value={ingredientForm.id} onChange={e => setIngredientForm({ ...ingredientForm, id: e.target.value })}><option value="">Ingredient</option>{ingredients.map(row => <option value={row.id} key={row.id}>{row.name} ({row.unit})</option>)}</select><input className="form-input" type="number" min=".0001" step=".0001" value={ingredientForm.quantity} onChange={e => setIngredientForm({ ...ingredientForm, quantity: e.target.value })}/><button className="btn btn-secondary" onClick={() => addBase('ingredient')}><Plus size={15}/></button></div></section>
+      <section><h3>Disposable Inventory</h3><table className="data-table"><thead><tr><th>Item</th><th>Qty</th><th>Unit cost</th><th>Extended</th><th/></tr></thead><tbody>{inventoryLinks.map(link => { const row = inventoryById(link.inventoryId); return <tr key={link.id}><td>{row?.name}</td><td>{Number(link.quantity).toFixed(4)}</td><td>{formatCurrency(row?.cost)}</td><td>{formatCurrency(Number(link.quantity) * Number(row?.cost))}</td><td><button className="btn btn-ghost btn-icon" onClick={() => removeBase('inventory', link.id)}><Trash2 size={14}/></button></td></tr>; })}</tbody></table><div className="form-row"><select className="form-select" value={inventoryForm.id} onChange={e => setInventoryForm({ ...inventoryForm, id: e.target.value })}><option value="">Inventory</option>{inventory.map(row => <option value={row.id} key={row.id}>{row.name}</option>)}</select><input className="form-input" type="number" min=".0001" step=".0001" value={inventoryForm.quantity} onChange={e => setInventoryForm({ ...inventoryForm, quantity: e.target.value })}/><button className="btn btn-secondary" onClick={() => addBase('inventory')}><Plus size={15}/></button></div></section></div>
+    <h3 className="section-heading">Flavor / Sauce Modifier Groups</h3>
+    <div className="modifier-admin">{groups.map(group => <section key={group.id}><div className="flex-between"><button className="btn btn-ghost" onClick={() => editGroup(group)}><strong>{group.name}</strong><small> {group.required ? 'Required' : 'Optional'} · {group.selectionMode} · {group.minSelections}–{group.maxSelections}</small></button><button className="btn btn-ghost btn-icon" onClick={async () => { if (window.confirm(`Delete ${group.name}?`)) { await db.modifierGroups.delete(group.id); await load(); } }}><Trash2 size={15}/></button></div>
+      {options.filter(option => option.groupId === group.id).map(option => <div className="modifier-admin-option" key={option.id}><button className="btn btn-ghost" onClick={() => setOptionRecipe(option)}>{option.name}</button><button className="btn btn-ghost" onClick={() => editOption(option)}>Price +{formatCurrency(option.priceDelta)} · COGS +{formatCurrency(optionCosts[option.id])}</button><button className="btn btn-ghost btn-icon" onClick={async () => { await db.modifierOptions.delete(option.id); await load(); }}><Trash2 size={14}/></button></div>)}
+      <div className="form-row"><input className="form-input" placeholder="Option name" value={optionForms[group.id]?.name || ''} onChange={e => setOptionForms(current => ({ ...current, [group.id]: { ...current[group.id], name: e.target.value } }))}/><input className="form-input" type="number" step=".01" placeholder="Price +" value={optionForms[group.id]?.priceDelta || ''} onChange={e => setOptionForms(current => ({ ...current, [group.id]: { ...current[group.id], priceDelta: e.target.value } }))}/><button className="btn btn-secondary" onClick={() => addOption(group)}><Plus size={15}/> Option</button></div>
+    </section>)}</div>
+    <div className="card"><h4>Add modifier group</h4><div className="form-row"><input className="form-input" placeholder="Flavor, Sauce…" value={groupForm.name} onChange={e => setGroupForm({ ...groupForm, name: e.target.value })}/><select className="form-select" value={groupForm.selectionMode} onChange={e => setGroupForm({ ...groupForm, selectionMode: e.target.value, maxSelections: e.target.value === 'single' ? 1 : groupForm.maxSelections })}><option value="single">Single choice</option><option value="multiple">Multiple choice</option></select><label className="checkbox-row"><input type="checkbox" checked={groupForm.required} onChange={e => setGroupForm({ ...groupForm, required: e.target.checked })}/> Required</label><input className="form-input" type="number" min="0" value={groupForm.minSelections} onChange={e => setGroupForm({ ...groupForm, minSelections: e.target.value })} title="Minimum"/><input className="form-input" type="number" min="1" value={groupForm.maxSelections} disabled={groupForm.selectionMode === 'single'} onChange={e => setGroupForm({ ...groupForm, maxSelections: e.target.value })} title="Maximum"/><button className="btn btn-primary" onClick={addGroup}><Plus size={15}/> Group</button></div></div>
+    {optionRecipe && <Modal title={`Recipe: ${optionRecipe.name}`} onClose={() => setOptionRecipe(null)} footer={<button className="btn btn-primary" onClick={() => setOptionRecipe(null)}>Done</button>}><p>Incremental COGS: <strong>{formatCurrency(optionCosts[optionRecipe.id])}</strong></p><div className="form-row"><select className="form-select" value={optionLinkForm.kind} onChange={e => setOptionLinkForm({ kind: e.target.value, id: '', quantity: '' })}><option value="ingredient">Ingredient</option><option value="inventory">Inventory</option></select><select className="form-select" value={optionLinkForm.id} onChange={e => setOptionLinkForm({ ...optionLinkForm, id: e.target.value })}><option value="">Select</option>{(optionLinkForm.kind === 'ingredient' ? ingredients : inventory).map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select><input className="form-input" type="number" min=".0001" step=".0001" value={optionLinkForm.quantity} onChange={e => setOptionLinkForm({ ...optionLinkForm, quantity: e.target.value })}/><button className="btn btn-secondary" onClick={addOptionLink}><Plus size={15}/></button></div><OptionLinks option={optionRecipe} ingredients={ingredients} inventory={inventory} onChanged={load}/></Modal>}
+  </Modal>;
+}
 
-  async function loadLinks() {
-    const pIng = await db.productIngredients.where('productId').equals(product.id).toArray();
-    const pInv = await db.productInventory.where('productId').equals(product.id).toArray();
-    
-    // Enrich with names
-    for (const item of pIng) {
-      const ing = await db.ingredients.get(item.ingredientId);
-      item.name = ing ? ing.name : 'Unknown';
-      item.unit = ing ? ing.unit : '';
-    }
-    for (const item of pInv) {
-      const inv = await db.inventory.get(item.inventoryId);
-      item.name = inv ? inv.name : 'Unknown';
-    }
-    
-    setLinkedIngredients(pIng);
-    setLinkedInventory(pInv);
-  }
-
-  async function addIngredient() {
-    if (!ingForm.id || !ingForm.qty || ingForm.qty <= 0) return;
-    await db.productIngredients.add({
-      productId: product.id,
-      ingredientId: Number(ingForm.id),
-      quantity: Number(ingForm.qty)
-    });
-    toast('Ingredient linked');
-    setIngForm({ id: '', qty: '' });
-    loadLinks();
-  }
-
-  async function addInventory() {
-    if (!invForm.id || !invForm.qty || invForm.qty <= 0) return;
-    await db.productInventory.add({
-      productId: product.id,
-      inventoryId: Number(invForm.id),
-      quantity: Number(invForm.qty)
-    });
-    toast('Inventory linked');
-    setInvForm({ id: '', qty: '' });
-    loadLinks();
-  }
-
-  async function removeIngredient(id) {
-    await db.productIngredients.delete(id);
-    toast('Link removed', 'info');
-    loadLinks();
-  }
-
-  async function removeInventory(id) {
-    await db.productInventory.delete(id);
-    toast('Link removed', 'info');
-    loadLinks();
-  }
-
-  return (
-    <Modal title={`Recipe: ${product.name}`} large onClose={onClose} footer={
-      <button className="btn btn-primary" onClick={onClose}>Close</button>
-    }>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        {/* Ingredients Section */}
-        <div>
-          <h3 style={{ fontSize: '1.1rem', marginBottom: 12, color: 'var(--accent)' }}>Raw Ingredients</h3>
-          
-          <div className="table-container" style={{ marginBottom: 16 }}>
-            <table className="data-table">
-              <thead><tr><th>Ingredient</th><th>Qty</th><th></th></tr></thead>
-              <tbody>
-                {linkedIngredients.length === 0 && <tr><td colSpan={3} className="text-muted text-sm text-center">No ingredients linked</td></tr>}
-                {linkedIngredients.map(item => (
-                  <tr key={item.id}>
-                    <td>{item.name}</td>
-                    <td>{item.quantity}{item.unit}</td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => removeIngredient(item.id)}><Trash2 size={14} color="var(--danger)"/></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="form-row" style={{ alignItems: 'flex-end' }}>
-            <div className="form-group" style={{ flex: 2 }}>
-              <label className="form-label">Ingredient</label>
-              <select className="form-select" value={ingForm.id} onChange={e => setIngForm({...ingForm, id: e.target.value})}>
-                <option value="">Select...</option>
-                {ingredients.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
-              </select>
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label className="form-label">Qty</label>
-              <input type="number" className="form-input" value={ingForm.qty} onChange={e => setIngForm({...ingForm, qty: e.target.value})} />
-            </div>
-            <div className="form-group">
-              <button className="btn btn-secondary" onClick={addIngredient} disabled={!ingForm.id || !ingForm.qty}><Plus size={16}/></button>
-            </div>
-          </div>
-        </div>
-
-        {/* Inventory Section */}
-        <div>
-          <h3 style={{ fontSize: '1.1rem', marginBottom: 12, color: 'var(--accent)' }}>Disposables (Inventory)</h3>
-          
-          <div className="table-container" style={{ marginBottom: 16 }}>
-            <table className="data-table">
-              <thead><tr><th>Item</th><th>Qty</th><th></th></tr></thead>
-              <tbody>
-                {linkedInventory.length === 0 && <tr><td colSpan={3} className="text-muted text-sm text-center">No inventory linked</td></tr>}
-                {linkedInventory.map(item => (
-                  <tr key={item.id}>
-                    <td>{item.name}</td>
-                    <td>{item.quantity}</td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => removeInventory(item.id)}><Trash2 size={14} color="var(--danger)"/></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="form-row" style={{ alignItems: 'flex-end' }}>
-            <div className="form-group" style={{ flex: 2 }}>
-              <label className="form-label">Inventory Item</label>
-              <select className="form-select" value={invForm.id} onChange={e => setInvForm({...invForm, id: e.target.value})}>
-                <option value="">Select...</option>
-                {inventory.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-              </select>
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label className="form-label">Qty</label>
-              <input type="number" className="form-input" value={invForm.qty} onChange={e => setInvForm({...invForm, qty: e.target.value})} />
-            </div>
-            <div className="form-group">
-              <button className="btn btn-secondary" onClick={addInventory} disabled={!invForm.id || !invForm.qty}><Plus size={16}/></button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Modal>
-  );
+function OptionLinks({ option, ingredients, inventory, onChanged }) {
+  const [ingredientLinks, setIngredientLinks] = useState([]); const [inventoryLinks, setInventoryLinks] = useState([]);
+  async function load() { setIngredientLinks(await db.modifierOptionIngredients.where('optionId').equals(option.id).toArray()); setInventoryLinks(await db.modifierOptionInventory.where('optionId').equals(option.id).toArray()); }
+  useEffect(() => { load(); }, [option.id]);
+  async function remove(kind, id) { await (kind === 'ingredient' ? db.modifierOptionIngredients : db.modifierOptionInventory).delete(id); await load(); await onChanged(); }
+  return <table className="data-table"><tbody>{ingredientLinks.map(link => <tr key={`i${link.id}`}><td>{ingredients.find(row => row.id === link.ingredientId)?.name}</td><td>{Number(link.quantity).toFixed(4)}</td><td><button className="btn btn-ghost btn-icon" onClick={() => remove('ingredient', link.id)}><Trash2 size={14}/></button></td></tr>)}{inventoryLinks.map(link => <tr key={`v${link.id}`}><td>{inventory.find(row => row.id === link.inventoryId)?.name}</td><td>{Number(link.quantity).toFixed(4)}</td><td><button className="btn btn-ghost btn-icon" onClick={() => remove('inventory', link.id)}><Trash2 size={14}/></button></td></tr>)}</tbody></table>;
 }

@@ -8,7 +8,7 @@ const pageTitles = {
   '/': 'Dashboard', '/pos': 'Point of Sale', '/products': 'Product Management',
   '/inventory': 'Inventory', '/ingredients': 'Ingredients', '/time-tracking': 'Time Tracking',
   '/cash': 'Cash Drawer', '/reports': 'Business Report', '/transactions': 'Transaction Report',
-  '/voids': 'Void Log', '/maintenance': 'Maintenance',
+  '/voids': 'Void Log', '/staff': 'Staff Management', '/audit': 'Audit Log', '/maintenance': 'Maintenance',
 };
 
 export default function Header() {

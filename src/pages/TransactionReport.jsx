@@ -10,7 +10,8 @@ import { calcItemTotal } from '../utils/calculations';
 import { PAGE_SIZE, downloadJson, getDateRangeFilters, recordIngredientMovement, reverseDailySalesSummary } from '../utils/durability';
 import { adjustIngredientStock } from '../utils/stockAdjustments';
 import { buildPaymentTotals, formatPaymentLabel, normalizePaymentLines, paymentMethodMatches, PAYMENT_METHODS } from '../utils/payments';
-import { reverseLoyaltyForTransaction } from '../utils/loyalty';
+import { writeAudit } from '../utils/audit';
+import { shiftDateRange } from '../utils/dateNavigation';
 
 function toDateInputValue(date) {
   return date.toISOString().slice(0, 10);
@@ -81,10 +82,16 @@ export default function TransactionReport() {
     if (staffFilter !== 'All') filters.push({ field: 'staffId', op: 'eq', value: Number(staffFilter) });
     setTxns(await db.transactions.query({ filters, orderBy: 'datetime', ascending: false, limit: PAGE_SIZE, offset: page * PAGE_SIZE }));
   }
+  async function openDetails(transaction) {
+    const queue = await db.orderQueue.where('transactionId').equals(transaction.id).first();
+    const queueItems = queue ? await db.orderQueueItems.where('queueId').equals(queue.id).toArray() : [];
+    setSelected({ ...transaction, queueTiming: queue ? { ...queue, items: queueItems } : null });
+  }
 
   async function restoreTransactionIngredients(txn, staff, reason) {
     for (const item of (txn.items || [])) {
       const links = await db.productIngredients.where('productId').equals(item.productId).toArray();
+      for (const modifier of item.modifiers || []) links.push(...await db.modifierOptionIngredients.where('optionId').equals(modifier.id).toArray());
       for (const link of links) {
         const ing = await db.ingredients.get(link.ingredientId);
         if (ing) {
@@ -113,14 +120,17 @@ export default function TransactionReport() {
           });
         }
       }
+      const inventoryLinks = await db.productInventory.where('productId').equals(item.productId).toArray();
+      for (const modifier of item.modifiers || []) inventoryLinks.push(...await db.modifierOptionInventory.where('optionId').equals(modifier.id).toArray());
+      for (const link of inventoryLinks) { const inventory = await db.inventory.get(link.inventoryId); if (inventory) await db.inventory.update(inventory.id, { inStock: Number(inventory.inStock || 0) + Number(link.quantity) * Number(item.quantity || 1) }); }
     }
   }
 
   async function handleVoid() {
     try {
-      const manager = await db.staff.where('pin').equals(managerPin).first();
-      if (!manager || (manager.role !== 'manager' && manager.role !== 'owner')) {
-        setVoidError('Invalid manager or owner PIN');
+      const employee = await db.staff.where('pin').equals(managerPin).first();
+      if (!employee || employee.id !== currentStaff?.id) {
+        setVoidError('Enter your own six-digit employee PIN.');
         return;
       }
 
@@ -128,12 +138,12 @@ export default function TransactionReport() {
       await db.transactions.update(txn.id, { status: 'void' });
       await db.voidLog.add({
         transactionId: txn.id, receiptNo: txn.receiptNo, reason: voidReason,
-        staffId: manager.id, staffName: manager.name, datetime: Date.now(),
+        staffId: employee.id, staffName: employee.name, datetime: Date.now(),
         originalData: JSON.parse(JSON.stringify(txn)),
       });
       await reverseDailySalesSummary(txn);
-      await reverseLoyaltyForTransaction(txn, manager, 'voided transaction');
-      await restoreTransactionIngredients(txn, manager, 'voided');
+      await restoreTransactionIngredients(txn, employee, 'voided');
+      await writeAudit({ action: 'VOID', entityType: 'transaction', entity: txn.receiptNo, entityId: txn.id, staff: employee, beforeState: { status: txn.status }, afterState: { status: 'void' }, details: `Voided by ${employee.name}: ${voidReason}` });
       toast('Transaction voided');
       setShowVoid(null); setVoidReason(''); setManagerPin(''); setVoidError('');
       setSelected(null); load();
@@ -149,7 +159,6 @@ export default function TransactionReport() {
     try {
       if (txn.status !== 'void') {
         await reverseDailySalesSummary(txn);
-        await reverseLoyaltyForTransaction(txn, currentStaff, 'deleted transaction');
         await restoreTransactionIngredients(txn, currentStaff, 'deleted transaction');
       }
       await db.voidLog.where('transactionId').equals(txn.id).delete();
@@ -185,6 +194,7 @@ export default function TransactionReport() {
   const voided = filtered.filter(t => t.status === 'void');
   const totalSales = completed.reduce((sum, t) => sum + Number(t.total || 0), 0);
   const avgTicket = completed.length ? totalSales / completed.length : 0;
+  const totalDiscounts = completed.reduce((sum, transaction) => sum + Number(transaction.discountTotal || 0), 0);
   const paymentTotals = buildPaymentTotals(completed);
   const paymentOptions = ['All', ...PAYMENT_METHODS];
 
@@ -211,8 +221,10 @@ export default function TransactionReport() {
 
       {range === 'custom' && (
         <div className="toolbar">
+          <button className="btn btn-secondary" onClick={() => { const values = shiftDateRange(customStart || customEnd, customEnd, -1); setCustomStart(values[0]); setCustomEnd(values[1]); }}>Previous</button>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">From</label><input className="form-input" type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">To</label><input className="form-input" type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} /></div>
+          <button className="btn btn-secondary" onClick={() => { const values = shiftDateRange(customStart || customEnd, customEnd, 1); setCustomStart(values[0]); setCustomEnd(values[1]); }}>Next</button>
         </div>
       )}
 
@@ -238,6 +250,7 @@ export default function TransactionReport() {
         <div className="stat-card"><div className="stat-label">Completed</div><div className="stat-value">{completed.length}</div></div>
         <div className="stat-card"><div className="stat-label">Voids</div><div className="stat-value" style={{ color: 'var(--danger)' }}>{voided.length}</div></div>
         <div className="stat-card"><div className="stat-label">Average Ticket</div><div className="stat-value">{formatCurrency(avgTicket)}</div></div>
+        <div className="stat-card"><div className="stat-label">Discounts</div><div className="stat-value">{formatCurrency(totalDiscounts)}</div></div>
       </div>
 
       <div className="card report-table-card mb-16">
@@ -256,7 +269,7 @@ export default function TransactionReport() {
 
       <div className="table-container">
         <table className="data-table">
-          <thead><tr><th>Date / Time</th><th>Receipt #</th><th>Type</th><th>Items</th><th>Payment</th><th>Staff</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Date / Time</th><th>Receipt #</th><th>Type</th><th>Items</th><th>Payment</th><th>Staff</th><th>Discount</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>
             {filtered.map(t => (
               <tr key={t.id}>
@@ -266,11 +279,12 @@ export default function TransactionReport() {
                 <td className="truncate" style={{ maxWidth: 200 }}>{(t.items||[]).map(i => `${i.name}×${i.quantity}${i.note ? ` (${i.note})` : ''}`).join(', ')}</td>
                 <td>{formatPaymentLabel(t)}</td>
                 <td>{t.staffName || '—'}</td>
+                <td>{formatCurrency(t.discountTotal || 0)}</td>
                 <td style={{ fontWeight: 600 }}>{formatCurrency(t.total)}</td>
                 <td>{t.status === 'void' ? <span className="void-stamp">VOID</span> : <span className="badge badge-success">Completed</span>}</td>
                 <td>
                   <div className="flex gap-8">
-                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setSelected(t)} title="View"><Eye size={14} /></button>
+                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => openDetails(t)} title="View"><Eye size={14} /></button>
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setShowReceipt(t)} title="Receipt"><Receipt size={14} /></button>
                     {t.status !== 'void' && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setShowVoid(t)} title="Void"><Ban size={14} /></button>}
                     {isOwner && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => deleteTransaction(t)} title="Delete"><Trash2 size={14} /></button>}
@@ -301,6 +315,7 @@ export default function TransactionReport() {
             <div><span className="form-label">Receipt #</span><div style={{ fontWeight: 600 }}>{selected.receiptNo}</div></div>
             <div><span className="form-label">Date & Time</span><div>{formatDateTime(selected.datetime)}</div></div>
           </div>
+          {selected.queueTiming && <div className="table-container mb-16"><table className="data-table"><tbody><tr><td>Pager</td><td>{selected.queueTiming.pagerNumber}</td></tr><tr><td>Queue status</td><td>{selected.queueTiming.status}</td></tr><tr><td>Preparation time</td><td>{selected.queueTiming.durationMs ? `${Math.floor(selected.queueTiming.durationMs / 60000)}m ${Math.round((selected.queueTiming.durationMs % 60000) / 1000)}s` : 'In progress'}</td></tr>{selected.queueTiming.items.map(item => <tr key={item.id}><td>{item.name}</td><td>{item.durationMs ? `${Math.floor(item.durationMs / 60000)}m ${Math.round((item.durationMs % 60000) / 1000)}s` : 'Not served'}</td></tr>)}</tbody></table></div>}
           <div className="form-row mb-16">
             <div><span className="form-label">Order Type</span><div><span className="badge badge-neutral">{selected.orderType}</span></div></div>
             <div><span className="form-label">Payment</span><div>{formatPaymentLabel(selected)}</div></div>
@@ -310,47 +325,20 @@ export default function TransactionReport() {
             <div><span className="form-label">Status</span><div>{selected.status === 'void' ? <span className="void-stamp">VOID</span> : <span className="badge badge-success">Completed</span>}</div></div>
           </div>
 
-          {selected.customerName && (
-            <div className="table-container" style={{ marginBottom: 16 }}>
-              <table className="data-table">
-                <tbody>
-                  <tr><td>Member</td><td className="text-right">{selected.customerName}</td></tr>
-                  <tr><td>Member Code</td><td className="text-right">{selected.memberCode || '-'}</td></tr>
-                  {Number(selected.loyaltyDiscount || 0) > 0 && <tr><td>Loyalty Discount</td><td className="text-right">-{formatCurrency(selected.loyaltyDiscount)}</td></tr>}
-                  {Number(selected.loyaltyRedeemed || 0) > 0 && <tr><td>Points Redeemed</td><td className="text-right">{selected.loyaltyRedeemed}</td></tr>}
-                  {Number(selected.loyaltyEarned || 0) > 0 && <tr><td>Points Earned</td><td className="text-right">{selected.loyaltyEarned}</td></tr>}
-                  {selected.birthdayRewardRedeemed && <tr><td>Birthday Reward</td><td className="text-right">Redeemed</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {normalizePaymentLines(selected).length > 1 && (
-            <div className="table-container" style={{ marginBottom: 16 }}>
-              <table className="data-table">
-                <thead><tr><th>Payment Method</th><th className="text-right">Amount</th></tr></thead>
-                <tbody>
-                  {normalizePaymentLines(selected).map(line => (
-                    <tr key={line.method}><td>{line.method}</td><td className="text-right">{formatCurrency(line.amount)}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
           <h4 style={{ fontSize: '0.9rem', marginBottom: 8, color: 'var(--text-secondary)' }}>Items</h4>
           <div className="table-container" style={{ marginBottom: 16 }}>
             <table className="data-table">
-              <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Discount</th><th>Markup</th><th>Subtotal</th></tr></thead>
+              <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Modifiers</th><th>Unit COGS</th><th>Subtotal</th></tr></thead>
               <tbody>
                 {(selected.items || []).map((item, i) => (
                   <tr key={i}>
                     <td>
                       <div>{item.name}</div>
+                      {item.modifiers?.length > 0 && <div className="text-muted text-sm">{item.modifiers.map(modifier => modifier.name).join(', ')}</div>}
                       {item.note && <div className="text-muted text-sm" style={{ whiteSpace: 'pre-wrap' }}>Note: {item.note}</div>}
                     </td><td>{item.quantity}</td><td>{formatUnitPrice(item)}</td>
-                    <td>{formatAdjustment(item.discount, item.discountAmount)}</td>
-                    <td>{formatAdjustment(item.markup, item.markupAmount)}</td>
+                    <td>{item.modifiers?.length || 0}</td>
+                    <td>{formatCurrency(item.cost || 0)}</td>
                     <td style={{ fontWeight: 600 }}>{formatCurrency(calcItemTotal(item))}</td>
                   </tr>
                 ))}
@@ -368,11 +356,11 @@ export default function TransactionReport() {
               </table>
             </div>
           )}
-          {Number(selected.loyaltyDiscount || 0) > 0 && (
+          {Number(selected.discountTotal || 0) > 0 && (
             <div className="table-container" style={{ marginBottom: 16 }}>
               <table className="data-table">
                 <tbody>
-                  <tr><td>Loyalty Discount</td><td className="text-right">-{formatCurrency(selected.loyaltyDiscount)}</td></tr>
+                  <tr><td>PWD / Senior Discount ({selected.discountAuthorizationCount || 0} ID)</td><td className="text-right">-{formatCurrency(selected.discountTotal)}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -389,7 +377,7 @@ export default function TransactionReport() {
         }>
           <p style={{ marginBottom: 16, fontSize: '0.9rem' }}>Voiding <strong>{showVoid.receiptNo}</strong> — {formatCurrency(showVoid.total)}</p>
           <div className="form-group"><label className="form-label">Reason for voiding *</label><input className="form-input" value={voidReason} onChange={e => setVoidReason(e.target.value)} placeholder="Enter reason" /></div>
-          <div className="form-group"><label className="form-label">Manager PIN *</label><input className="form-input" type="password" maxLength={4} value={managerPin} onChange={e => { setManagerPin(e.target.value); setVoidError(''); }} placeholder="Enter manager PIN" /></div>
+          <div className="form-group"><label className="form-label">Your Employee PIN *</label><input className="form-input" type="password" inputMode="numeric" maxLength={6} value={managerPin} onChange={e => { setManagerPin(e.target.value.replace(/\D/g, '')); setVoidError(''); }} placeholder="Enter your six-digit PIN" /></div>
           {voidError && <p style={{ color: 'var(--danger)', fontSize: '0.85rem' }}>{voidError}</p>}
         </Modal>
       )}

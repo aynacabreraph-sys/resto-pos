@@ -14,6 +14,8 @@ export function calcCartTotal(items, orderDiscount = 0, orderMarkup = 0, orderDi
 
 export function calcItemTotal(item) {
   const qty = Number(item.quantity || 1);
+  if (item.configuredPrice !== undefined) return Number(item.configuredPrice || 0) * qty;
+  if (Array.isArray(item.modifiers)) return (Number(item.price || 0) + item.modifiers.reduce((sum, modifier) => sum + Number(modifier.priceDelta || 0), 0)) * qty;
   return calcItemAdjustedPrice(item) * qty;
 }
 

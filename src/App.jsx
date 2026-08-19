@@ -16,10 +16,9 @@ import BusinessReport from './pages/BusinessReport';
 import TransactionReport from './pages/TransactionReport';
 import VoidLog from './pages/VoidLog';
 import StaffManagement from './pages/StaffManagement';
-import CustomerMembership from './pages/CustomerMembership';
-import MemberPortal from './pages/MemberPortal';
 import AuditLog from './pages/AuditLog';
 import Maintenance from './pages/Maintenance';
+import { branding } from './config/branding';
 
 export default function App() {
   const currentStaff = useAuthStore(s => s.currentStaff);
@@ -31,20 +30,8 @@ export default function App() {
 
   if (!ready) return (
     <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)', color: 'var(--accent)', fontFamily: 'Playfair Display, serif', fontSize: '1.5rem' }}>
-      Loading 92Parameters...
+      Loading {branding.appName}...
     </div>
-  );
-
-  const isPublicMemberPage = window.location.hash.startsWith('#/member/');
-
-  if (isPublicMemberPage) return (
-    <ToastProvider>
-      <HashRouter>
-        <Routes>
-          <Route path="/member/:code" element={<MemberPortal />} />
-        </Routes>
-      </HashRouter>
-    </ToastProvider>
   );
 
   if (!currentStaff) return (
@@ -67,8 +54,6 @@ export default function App() {
             <Route path="/transactions" element={<TransactionReport />} />
             <Route path="/voids" element={<VoidLog />} />
             <Route path="/staff" element={<StaffManagement />} />
-            <Route path="/customers" element={<CustomerMembership />} />
-            <Route path="/member/:code" element={<MemberPortal />} />
             <Route path="/audit" element={<AuditLog />} />
             <Route path="/maintenance" element={<Maintenance />} />
           </Route>

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, CalendarDays, Search } from 'lucide-react';
+import { Camera, CalendarDays, Search, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import db, { supabase } from '../db/database';
 import Modal from '../components/common/Modal';
 import { useToast } from '../components/common/Toast';
 import { useAuthStore } from '../stores/authStore';
 import { formatTime, formatCurrency } from '../utils/formatters';
+import { downloadCsv, shiftDateRange, shiftDateValue } from '../utils/dateNavigation';
 
 function getLocalDateValue(date = new Date()) {
   const year = date.getFullYear();
@@ -21,6 +22,7 @@ export default function TimeTracking() {
   const [staff, setStaff] = useState([]);
   const [records, setRecords] = useState([]);
   const [attendanceSummary, setAttendanceSummary] = useState([]);
+  const [summaryRecords, setSummaryRecords] = useState([]);
   const [capturing, setCapturing] = useState(null); // {staffId, type: 'in'|'out'}
   const [stream, setStream] = useState(null);
   const [filterDate, setFilterDate] = useState(getLocalDateValue());
@@ -53,6 +55,7 @@ export default function TimeTracking() {
     ]);
     setStaff(staffRows);
     setRecords(dailyRecords);
+    setSummaryRecords(summaryRecords);
     setAttendanceSummary(buildAttendanceSummary(staffRows, summaryRecords));
   }
 
@@ -230,15 +233,20 @@ export default function TimeTracking() {
   }), { employees: 0, shifts: 0, activeShifts: 0, hoursWorked: 0, laborCost: 0 });
 
   const isToday = filterDate === getLocalDateValue();
+  function shiftSummary(direction) { const [start, end] = shiftDateRange(summaryStart, summaryEnd, direction); setSummaryStart(start); setSummaryEnd(end); }
+  function exportAttendance() {
+    const rows = summaryRecords.map(record => { const person = staff.find(row => row.id === record.staffId); return { Employee: person?.name || 'Unknown', Date: record.date, 'Time In': record.timeIn ? new Date(record.timeIn).toLocaleTimeString() : '', 'Time Out': record.timeOut ? new Date(record.timeOut).toLocaleTimeString() : '', Hours: getRecordHours(record).toFixed(4), 'Hourly Rate': Number(person?.hourlyRate || 0).toFixed(2), Wages: getRecordLaborCost(record, person).toFixed(2) }; });
+    downloadCsv(`attendance-${summaryStart}-to-${summaryEnd}.csv`, rows);
+  }
 
   return (
     <div className="animate-fade">
       <div className="page-header">
         <h2>Time Tracking</h2>
         {isOwner && (
-          <div className="search-bar" style={{ background: 'var(--bg-card)' }}>
+          <div className="flex gap-8"><button className="btn btn-secondary btn-icon" onClick={() => setFilterDate(shiftDateValue(filterDate, -1))}><ChevronLeft size={16}/></button><div className="search-bar" style={{ background: 'var(--bg-card)' }}>
             <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
-          </div>
+          </div><button className="btn btn-secondary btn-icon" onClick={() => setFilterDate(shiftDateValue(filterDate, 1))}><ChevronRight size={16}/></button></div>
         )}
       </div>
 
@@ -283,6 +291,7 @@ export default function TimeTracking() {
               <p className="text-muted text-sm">Counts distinct work days per staff member in the selected range.</p>
             </div>
             <div className="toolbar" style={{ margin: 0 }}>
+              <button className="btn btn-secondary btn-icon" onClick={() => shiftSummary(-1)} title="Previous period"><ChevronLeft size={16}/></button>
               <div className="search-bar" style={{ background: 'var(--bg-card)' }}>
                 <Search size={16} />
                 <input placeholder="Search employee..." value={ownerSearch} onChange={e => setOwnerSearch(e.target.value)} />
@@ -294,6 +303,8 @@ export default function TimeTracking() {
               <div className="search-bar" style={{ background: 'var(--bg-card)' }}>
                 <input type="date" value={summaryEnd} onChange={e => setSummaryEnd(e.target.value)} />
               </div>
+              <button className="btn btn-secondary btn-icon" onClick={() => shiftSummary(1)} title="Next period"><ChevronRight size={16}/></button>
+              <button className="btn btn-secondary" onClick={exportAttendance}><Download size={16}/> Export CSV</button>
             </div>
           </div>
           <div className="stat-grid" style={{ marginBottom: 16 }}>
@@ -357,7 +368,7 @@ export default function TimeTracking() {
         <Modal title={`Confirm PIN - ${getStaffName(pinPrompt.staffId)}`} onClose={() => setPinPrompt(null)} footer={
           <>
             <button className="btn btn-secondary" onClick={() => setPinPrompt(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={confirmPin} disabled={pinValue.length !== 4}>Continue</button>
+            <button className="btn btn-primary" onClick={confirmPin} disabled={pinValue.length !== 6}>Continue</button>
           </>
         }>
           <div className="form-group">
@@ -366,16 +377,16 @@ export default function TimeTracking() {
               className="form-input"
               type="password"
               inputMode="numeric"
-              maxLength={4}
+              maxLength={6}
               value={pinValue}
               onChange={e => {
                 setPinValue(e.target.value.replace(/\D/g, ''));
                 setPinError('');
               }}
               onKeyDown={e => {
-                if (e.key === 'Enter' && pinValue.length === 4) confirmPin();
+                if (e.key === 'Enter' && pinValue.length === 6) confirmPin();
               }}
-              placeholder="Enter 4-digit PIN"
+              placeholder="Enter 6-digit PIN"
               autoFocus
             />
           </div>

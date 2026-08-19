@@ -5,6 +5,7 @@ import { formatCurrency } from '../utils/formatters';
 import { calcGrossProfit, calcItemTotal } from '../utils/calculations';
 import { getDateRangeFilters } from '../utils/durability';
 import { buildPaymentTotals, PAYMENT_METHODS, paymentMethodMatches } from '../utils/payments';
+import { shiftDateRange } from '../utils/dateNavigation';
 
 const COLORS = ['#d4982a', '#f59e0b', '#34d399', '#60a5fa', '#a78bfa', '#f87171'];
 
@@ -46,18 +47,22 @@ export default function BusinessReport() {
   const [lookbackUnit, setLookbackUnit] = useState('months');
   const [txns, setTxns] = useState([]);
   const [stats, setStats] = useState({ revenue: 0, cost: 0, profit: 0 });
+  const [queueOrders, setQueueOrders] = useState([]);
+  const [queueItems, setQueueItems] = useState([]);
+  const [discountRows, setDiscountRows] = useState([]);
 
   useEffect(() => { load(); }, [range, customStart, customEnd, lookbackAmount, lookbackUnit]);
 
   async function load() {
     const { start, end } = getRangeBounds(range, customStart, customEnd, lookbackAmount, lookbackUnit);
-    const all = await db.transactions.query({
+    const [all, queue, queuedItems, discounts] = await Promise.all([db.transactions.query({
       filters: getDateRangeFilters(start, end),
       orderBy: 'datetime',
       ascending: true,
       limit: 5000,
-    });
+    }), db.orderQueue.query({ filters: getDateRangeFilters(start, end, 'queuedAt'), limit: 5000 }), db.orderQueueItems.toArray(), db.discountAuthorizations.toArray()]);
     setTxns(all);
+    setQueueOrders(queue); setQueueItems(queuedItems); setDiscountRows(discounts);
     setStats(calcGrossProfit(all));
   }
 
@@ -70,6 +75,18 @@ export default function BusinessReport() {
   const totalSales = valid.reduce((s,t) => s + (t.total || 0), 0);
   const avgTicket = valid.length ? totalSales / valid.length : 0;
   const totalItems = valid.reduce((s,t) => s + (t.items || []).reduce((a,i) => a + i.quantity, 0), 0);
+  const transactionIds = new Set(valid.map(row => row.id));
+  const relevantDiscounts = discountRows.filter(row => transactionIds.has(row.transactionId));
+  const discountAmount = valid.reduce((sum, row) => sum + Number(row.discountTotal || 0), 0);
+  const pwdCount = relevantDiscounts.filter(row => row.type === 'PWD').length;
+  const seniorCount = relevantDiscounts.filter(row => row.type === 'Senior').length;
+  const completedQueue = queueOrders.filter(row => row.status === 'completed' && Number(row.durationMs) >= 0);
+  const durations = completedQueue.map(row => Number(row.durationMs)).sort((a, b) => a - b);
+  const averageQueue = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0;
+  const medianQueue = durations.length ? (durations[Math.floor((durations.length - 1) / 2)] + durations[Math.ceil((durations.length - 1) / 2)]) / 2 : 0;
+  const durationLabel = value => `${Math.floor(value / 60000)}m ${Math.round((value % 60000) / 1000)}s`;
+  const queueIds = new Set(completedQueue.map(row => row.id)); const productTimes = {};
+  queueItems.filter(row => queueIds.has(row.queueId) && row.durationMs).forEach(row => { const key = row.name; productTimes[key] ||= []; productTimes[key].push(Number(row.durationMs)); });
 
   // Sales by category
   const catMap = {};
@@ -139,8 +156,10 @@ export default function BusinessReport() {
           )}
           {range === 'custom' && (
             <>
+              <button className="btn btn-secondary" onClick={() => { const values = shiftDateRange(customStart || customEnd, customEnd, -1); setCustomStart(values[0]); setCustomEnd(values[1]); }}>Previous</button>
               <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">From</label><input className="form-input" type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} /></div>
               <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">To</label><input className="form-input" type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} /></div>
+              <button className="btn btn-secondary" onClick={() => { const values = shiftDateRange(customStart || customEnd, customEnd, 1); setCustomStart(values[0]); setCustomEnd(values[1]); }}>Next</button>
             </>
           )}
           <span className="text-sm text-muted">Showing {start.toLocaleDateString()} to {end.toLocaleDateString()}</span>
@@ -162,7 +181,11 @@ export default function BusinessReport() {
         <div className="stat-card"><div className="stat-label">Items Sold</div><div className="stat-value">{totalItems}</div></div>
         <div className="stat-card"><div className="stat-label">Cost of Goods</div><div className="stat-value">{formatCurrency(filteredStats.cost)}</div></div>
         <div className="stat-card"><div className="stat-label">Gross Profit</div><div className="stat-value" style={{ color: 'var(--success)' }}>{formatCurrency(filteredStats.profit)}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Discounts</div><div className="stat-value">{formatCurrency(discountAmount)}</div></div>
+        <div className="stat-card"><div className="stat-label">Avg Queue Time</div><div className="stat-value">{durationLabel(averageQueue)}</div></div>
       </div>
+
+      <div className="report-grid mb-16"><div className="card"><div className="card-title mb-16">PWD / Senior Discounts</div><table className="summary-table"><tbody><tr><th>Total discount</th><td>{formatCurrency(discountAmount)}</td></tr><tr><th>PWD IDs</th><td>{pwdCount}</td></tr><tr><th>Senior IDs</th><td>{seniorCount}</td></tr></tbody></table></div><div className="card"><div className="card-title mb-16">Queue Performance</div><table className="summary-table"><tbody><tr><th>Completed orders</th><td>{completedQueue.length}</td></tr><tr><th>Average</th><td>{durationLabel(averageQueue)}</td></tr><tr><th>Median</th><td>{durationLabel(medianQueue)}</td></tr><tr><th>Over 10 minutes</th><td>{durations.filter(value => value >= 600000).length}</td></tr><tr><th>Over 12 minutes</th><td>{durations.filter(value => value >= 720000).length}</td></tr>{Object.entries(productTimes).sort((a,b) => b[1].length-a[1].length).slice(0,8).map(([name, values]) => <tr key={name}><th>{name}</th><td>{durationLabel(values.reduce((sum,value) => sum+value,0)/values.length)}</td></tr>)}</tbody></table></div></div>
 
       <div className="report-grid">
         <div className="card report-table-card">

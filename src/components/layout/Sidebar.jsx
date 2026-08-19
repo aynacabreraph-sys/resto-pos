@@ -3,6 +3,7 @@ import { LayoutDashboard, ShoppingCart, Package, Warehouse, Leaf, Clock, DollarS
 import { useUiStore } from '../../stores/uiStore';
 import { useAuthStore } from '../../stores/authStore';
 import { navItems } from '../../config/navigation';
+import { branding } from '../../config/branding';
 
 export default function Sidebar() {
   const { sidebarOpen, mobileMenuOpen, toggleSidebar, setMobileMenuOpen } = useUiStore();
@@ -14,8 +15,8 @@ export default function Sidebar() {
   return (
     <aside className={`sidebar ${sidebarOpen ? '' : 'collapsed'} ${mobileMenuOpen ? 'mobile-open' : ''}`}>
       <div className="sidebar-logo">
-        <div className="logo-icon">92</div>
-        <h1>Parameters</h1>
+        <div className="logo-icon">{branding.logoShort}</div>
+        <h1>{branding.logoSubtitle}</h1>
         <button className="btn btn-ghost btn-icon mobile-only close-drawer" onClick={() => setMobileMenuOpen(false)}>
           <X size={20} />
         </button>

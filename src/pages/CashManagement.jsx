@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowUpCircle, ArrowDownCircle, BarChart3, CalendarDays, Search } from 'lucide-react';
+import { ArrowUpCircle, ArrowDownCircle, BarChart3, CalendarDays, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import db from '../db/database';
 import Modal from '../components/common/Modal';
 import { useAuthStore } from '../stores/authStore';
 import { useToast } from '../components/common/Toast';
 import { formatCurrency, formatDateTime } from '../utils/formatters';
 import { sumPaymentMethod } from '../utils/payments';
+import { shiftDateValue } from '../utils/dateNavigation';
 
 function toDateInputValue(date) {
   return date.toISOString().slice(0, 10);
@@ -105,13 +106,14 @@ export default function CashManagement() {
   const monthlyIn = filteredMonthlyEntries.filter(e => e.type === 'in').reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const monthlyOut = filteredMonthlyEntries.filter(e => e.type === 'out').reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const monthlyNet = monthlyIn - monthlyOut;
+  function shiftReportMonth(direction) { const [year, month] = reportMonth.split('-').map(Number); const date = new Date(year, month - 1 + direction, 1); setReportMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`); }
 
   return (
     <div className="animate-fade">
       <div className="page-header">
         <h2>Cash Drawer</h2>
         <div className="flex gap-8">
-          <input className="form-input" type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} style={{ width: 160 }} />
+          <button className="btn btn-secondary btn-icon" onClick={() => setFilterDate(shiftDateValue(filterDate, -1))}><ChevronLeft size={16}/></button><input className="form-input" type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} style={{ width: 160 }} /><button className="btn btn-secondary btn-icon" onClick={() => setFilterDate(shiftDateValue(filterDate, 1))}><ChevronRight size={16}/></button>
           <button className="btn btn-secondary" onClick={() => setShowMonthlyReport(true)}><BarChart3 size={16} /> Monthly Reports</button>
           <button className="btn btn-success" onClick={() => setShowForm('in')}><ArrowUpCircle size={16} /> Cash In</button>
           <button className="btn btn-danger" onClick={() => setShowForm('out')}><ArrowDownCircle size={16} /> Cash Out</button>
@@ -126,7 +128,7 @@ export default function CashManagement() {
       </div>
 
       <div className="alert-banner alert-info mb-24">
-        <span>Expected Cash = cash portions of completed sales + manual cash in - manual cash out. Split payments only add the cash portion to the drawer.</span>
+        <span>Expected Cash = completed cash sales + manual cash in - manual cash out.</span>
       </div>
 
       <div className="table-container">
@@ -159,10 +161,10 @@ export default function CashManagement() {
               <Search size={16} />
               <input placeholder="Search notes, staff, type..." value={reportSearch} onChange={e => setReportSearch(e.target.value)} />
             </div>
-            <div className="search-bar" style={{ background: 'var(--bg-card)' }}>
+            <button className="btn btn-secondary btn-icon" onClick={() => shiftReportMonth(-1)}><ChevronLeft size={16}/></button><div className="search-bar" style={{ background: 'var(--bg-card)' }}>
               <CalendarDays size={16} />
               <input type="month" value={reportMonth} onChange={e => setReportMonth(e.target.value)} />
-            </div>
+            </div><button className="btn btn-secondary btn-icon" onClick={() => shiftReportMonth(1)}><ChevronRight size={16}/></button>
           </div>
         </div>
 

@@ -5,6 +5,7 @@ import Modal from '../components/common/Modal';
 import { useAuthStore } from '../stores/authStore';
 import { useToast } from '../components/common/Toast';
 import { formatCurrency } from '../utils/formatters';
+import { writeAudit } from '../utils/audit';
 
 const emptyForm = { name: '', pin: '', role: 'cashier', hourlyRate: 0, profileImage: '' };
 
@@ -49,8 +50,8 @@ export default function StaffManagement() {
       return;
     }
     
-    if (!/^\d{4}$/.test(form.pin)) {
-      toast('PIN must be exactly 4 digits', 'error');
+    if (!/^\d{6}$/.test(form.pin)) {
+      toast('PIN must be exactly 6 digits', 'error');
       return;
     }
 
@@ -74,10 +75,13 @@ export default function StaffManagement() {
 
     try {
       if (editing === 'new') {
-        await db.staff.add(data);
+        const id = await db.staff.add(data);
+        await writeAudit({ action: 'CREATE', entityType: 'staff', entity: data.name, entityId: id, staff: currentStaff, afterState: data });
         toast('Staff member added successfully');
       } else {
+        const before = await db.staff.get(editing);
         await db.staff.update(editing, data);
+        await writeAudit({ action: 'UPDATE', entityType: 'staff', entity: data.name, entityId: editing, staff: currentStaff, beforeState: before, afterState: data });
         toast('Staff member updated successfully');
         
         // If the owner edits themselves, maybe update authStore?
@@ -178,7 +182,7 @@ export default function StaffManagement() {
                   </span>
                 </td>
                 <td style={{ fontWeight: 500 }}>{formatCurrency(s.hourlyRate || 0)}/hr</td>
-                <td style={{ fontFamily: 'monospace', letterSpacing: s.pin ? 2 : 0 }}>{s.pin ? '****' : 'No PIN'}</td>
+                <td style={{ fontFamily: 'monospace', letterSpacing: s.pin ? 2 : 0 }}>{s.pin ? '••••••' : 'No PIN'}</td>
                 <td>
                   <div className="flex gap-8">
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => openEdit(s)} title="Edit">
@@ -242,13 +246,13 @@ export default function StaffManagement() {
             </div>
 
             <div className="form-group">
-              <label className="form-label">4-Digit PIN</label>
+              <label className="form-label">6-Digit PIN</label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input 
                   className="form-input" 
                   type={showPin ? "text" : "password"}
-                  maxLength={4}
-                  placeholder="e.g. 1234"
+                  maxLength={6}
+                  placeholder="e.g. 123456"
                   value={form.pin} 
                   onChange={e => {
                     const val = e.target.value.replace(/\D/g, ''); // only allow digits

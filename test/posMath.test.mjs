@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { allocateDiscounts, countGraphemes, nextAvailablePager, profitMargin, recipeComponentCost, roundQuantity, totalDiscount, validateModifierSelections } from '../src/utils/posMath.js';
+
+test('four-decimal quantities and margins', () => { assert.equal(roundQuantity(1.23456), 1.2346); assert.equal(profitMargin(100, 40), 60); assert.equal(profitMargin(0, 40), null); });
+test('recipe and modifier component COGS', () => { assert.equal(recipeComponentCost([{ ingredientId: 1, quantity: .125 }, { ingredientId: 2, quantity: 2 }], [{ id: 1, unitCost: 80 }, { id: 2, unitCost: 3.5 }], 'ingredientId', 'unitCost'), 17); });
+test('emoji grapheme clusters', () => { assert.equal(countGraphemes('☕🍰'), 2); assert.equal(countGraphemes('👨‍👩‍👧‍👦'), 1); });
+test('discounts target highest configured units at 17.86%', () => { const rows = allocateDiscounts([{ name: 'Coffee', price: 100, quantity: 2 }, { name: 'Meal', price: 200, quantity: 1, modifiers: [{ priceDelta: 20 }] }], [{ type: 'PWD', idNumber: 'A', photo: 'x' }, { type: 'Senior', idNumber: 'B', photo: 'y' }]); assert.equal(rows[0].productName, 'Meal'); assert.equal(rows[0].discountAmount, 39.29); assert.equal(rows[1].productName, 'Coffee'); assert.equal(totalDiscount(rows), 57.15); });
+test('discount IDs are unique and count-limited', () => { assert.throws(() => allocateDiscounts([{ name: 'A', price: 1, quantity: 1 }], [{ idNumber: '1', photo: 'x' }, { idNumber: '2', photo: 'x' }])); assert.throws(() => allocateDiscounts([{ name: 'A', price: 1, quantity: 2 }], [{ idNumber: '1', photo: 'x' }, { idNumber: '1', photo: 'x' }])); });
+test('modifier min/max rules', () => { const groups = [{ required: true, minSelections: 1, maxSelections: 2, options: [{ id: 1 }, { id: 2 }, { id: 3 }] }]; assert.equal(validateModifierSelections(groups, []), false); assert.equal(validateModifierSelections(groups, [1, 2]), true); assert.equal(validateModifierSelections(groups, [1, 2, 3]), false); });
+test('pager cycling and exhaustion', () => { assert.equal(nextAvailablePager(10, []), 1); assert.equal(nextAvailablePager(1, [2, 3]), 4); assert.equal(nextAvailablePager(5, [1,2,3,4,5,6,7,8,9,10]), null); });

@@ -1,53 +1,21 @@
 import { create } from 'zustand';
 
+function lineKey(productId, modifiers = []) {
+  return `${productId}:${modifiers.map(row => row.id).sort((a, b) => a - b).join(',')}`;
+}
+
 export const usePosStore = create((set, get) => ({
-  cart: [],
-  orderType: 'Dine In',
-  orderDiscount: 0,
-  orderMarkup: 0,
-  orderDiscountAmount: 0,
-  orderMarkupAmount: 0,
-
-  setOrderType: (type) => set({ orderType: type }),
-  setOrderDiscount: (discount) => set({ orderDiscount: Number(discount || 0) }),
-  setOrderMarkup: (markup) => set({ orderMarkup: Number(markup || 0) }),
-  setOrderDiscountAmount: (amount) => set({ orderDiscountAmount: Number(amount || 0) }),
-  setOrderMarkupAmount: (amount) => set({ orderMarkupAmount: Number(amount || 0) }),
-
-  setCart: (cart, orderType = 'Dine In', orderDiscount = 0, orderMarkup = 0, orderDiscountAmount = 0, orderMarkupAmount = 0) => set({ cart, orderType, orderDiscount, orderMarkup, orderDiscountAmount, orderMarkupAmount }),
-
-  addItem: (product) => {
+  cart: [], orderType: 'Dine In',
+  setOrderType: orderType => set({ orderType }),
+  addItem: (product, modifiers = []) => {
+    const key = lineKey(product.id, modifiers);
     const cart = get().cart;
-    const existing = cart.find(i => i.productId === product.id);
-    if (existing) {
-      set({ cart: cart.map(i => i.productId === product.id ? { ...i, quantity: i.quantity + 1 } : i) });
-    } else {
-      set({ cart: [...cart, { productId: product.id, name: product.name, category: product.category, subCategory: product.subCategory, price: product.price, cost: product.cost || 0, quantity: 1, discount: 0, markup: 0, customPrice: 0, note: '' }] });
-    }
+    const existing = cart.find(item => item.lineKey === key);
+    if (existing) set({ cart: cart.map(item => item.lineKey === key ? { ...item, quantity: item.quantity + 1 } : item) });
+    else set({ cart: [...cart, { lineKey: key, productId: product.id, name: product.name, category: product.category, subCategory: product.subCategory, price: Number(product.price || 0), cost: Number(product.cost || 0), modifiers, quantity: 1, note: '' }] });
   },
-
-  removeItem: (productId) => {
-    set({ cart: get().cart.filter(i => i.productId !== productId) });
-  },
-
-  updateQuantity: (productId, qty) => {
-    if (qty <= 0) { get().removeItem(productId); return; }
-    set({ cart: get().cart.map(i => i.productId === productId ? { ...i, quantity: qty } : i) });
-  },
-
-  setDiscount: (productId, discount) => {
-    set({ cart: get().cart.map(i => i.productId === productId ? { ...i, discount: Number(discount), customPrice: 0 } : i) });
-  },
-  setMarkup: (productId, markup) => {
-    set({ cart: get().cart.map(i => i.productId === productId ? { ...i, markup: Number(markup), customPrice: 0 } : i) });
-  },
-  setCustomPrice: (productId, amount) => {
-    const customPrice = Number(amount || 0);
-    set({ cart: get().cart.map(i => i.productId === productId ? { ...i, customPrice, discount: customPrice > 0 ? 0 : i.discount, markup: customPrice > 0 ? 0 : i.markup } : i) });
-  },
-  setItemNote: (productId, note) => {
-    set({ cart: get().cart.map(i => i.productId === productId ? { ...i, note } : i) });
-  },
-
-  clearCart: () => set({ cart: [], orderType: 'Dine In', orderDiscount: 0, orderMarkup: 0, orderDiscountAmount: 0, orderMarkupAmount: 0 }),
+  removeItem: key => set({ cart: get().cart.filter(item => item.lineKey !== key) }),
+  updateQuantity: (key, quantity) => quantity <= 0 ? set({ cart: get().cart.filter(item => item.lineKey !== key) }) : set({ cart: get().cart.map(item => item.lineKey === key ? { ...item, quantity } : item) }),
+  setItemNote: (key, note) => set({ cart: get().cart.map(item => item.lineKey === key ? { ...item, note } : item) }),
+  clearCart: () => set({ cart: [], orderType: 'Dine In' }),
 }));

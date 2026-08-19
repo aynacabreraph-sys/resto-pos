@@ -1,86 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { Search, History } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import db from '../db/database';
 import { formatDateTime } from '../utils/formatters';
-import { PAGE_SIZE } from '../utils/durability';
+import { describeChanges } from '../utils/audit';
+import { shiftDateRange } from '../utils/dateNavigation';
 
+function localDate(date = new Date()) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
 export default function AuditLog() {
-  const [logs, setLogs] = useState([]);
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(0);
-
-  useEffect(() => { load(); }, [page]);
-
-  async function load() {
-    setLogs(await db.auditLog.query({ orderBy: 'datetime', ascending: false, limit: PAGE_SIZE, offset: page * PAGE_SIZE }));
-  }
-
-  const filtered = logs.filter(l => 
-    (l.entity || '').toLowerCase().includes(search.toLowerCase()) ||
-    (l.action || '').toLowerCase().includes(search.toLowerCase()) ||
-    (l.staffName || '').toLowerCase().includes(search.toLowerCase())
-  );
-
-  return (
-    <div className="animate-fade">
-      <div className="page-header">
-        <h2><History size={24} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }}/> Inventory Audit Log</h2>
-      </div>
-
-      <div className="toolbar">
-        <div className="search-bar">
-          <Search size={16} />
-          <input placeholder="Search item, action, staff..." value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
-      </div>
-
-      {logs.length === 0 ? (
-        <div className="empty-state">
-          <History size={48} />
-          <p>No audit logs available yet.</p>
-        </div>
-      ) : (
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Date & Time</th>
-                <th>Action</th>
-                <th>Item / Entity</th>
-                <th>Staff</th>
-                <th>Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(log => (
-                <tr key={log.id}>
-                  <td style={{ whiteSpace: 'nowrap' }}>{formatDateTime(log.datetime)}</td>
-                  <td>
-                    <span className={`badge ${
-                      log.action === 'CREATE' || log.action === 'RESTOCK' ? 'badge-success' :
-                      log.action === 'UPDATE' ? 'badge-warning' :
-                      log.action === 'DEDUCT' || log.action === 'DELETE' ? 'badge-danger' : 'badge-neutral'
-                    }`}>
-                      {log.action}
-                    </span>
-                  </td>
-                  <td style={{ fontWeight: 600 }}>{log.entity}</td>
-                  <td>{log.staffName || 'System'}</td>
-                  <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', maxWidth: 300 }}>
-                    {log.details}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <div className="pagination">
-        <button className="btn btn-secondary btn-sm" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>Previous</button>
-        <span className="text-sm text-muted">Page {page + 1}</span>
-        <button className="btn btn-secondary btn-sm" onClick={() => setPage(p => p + 1)} disabled={logs.length < PAGE_SIZE}>Next</button>
-      </div>
-    </div>
-  );
+  const monthAgo = new Date(); monthAgo.setDate(monthAgo.getDate() - 30);
+  const [logs, setLogs] = useState([]); const [staff, setStaff] = useState([]); const [start, setStart] = useState(localDate(monthAgo)); const [end, setEnd] = useState(localDate());
+  const [action, setAction] = useState('All'); const [staffId, setStaffId] = useState('All'); const [entityType, setEntityType] = useState('All'); const [search, setSearch] = useState('');
+  async function load() { const filters = [{ field: 'datetime', op: 'gte', value: new Date(`${start}T00:00:00`).getTime() }, { field: 'datetime', op: 'lte', value: new Date(`${end}T23:59:59.999`).getTime() }]; if (action !== 'All') filters.push({ field: 'action', op: 'eq', value: action }); if (staffId !== 'All') filters.push({ field: 'staffId', op: 'eq', value: Number(staffId) }); if (entityType !== 'All') filters.push({ field: 'entityType', op: 'eq', value: entityType }); setLogs(await db.auditLog.query({ filters, orderBy: 'datetime', ascending: false, limit: 1000 })); }
+  useEffect(() => { db.staff.toArray().then(setStaff); }, []); useEffect(() => { load(); }, [start, end, action, staffId, entityType]);
+  const actions = [...new Set(logs.map(row => row.action))].sort(); const entityTypes = [...new Set(logs.map(row => row.entityType).filter(Boolean))].sort(); const query = search.trim().toLowerCase(); const filtered = logs.filter(row => !query || [row.entity, row.details, row.staffName, row.action, row.entityType].some(value => String(value || '').toLowerCase().includes(query)));
+  function shift(direction) { const values = shiftDateRange(start, end, direction); setStart(values[0]); setEnd(values[1]); }
+  return <div className="animate-fade"><div className="page-header"><h2>Audit Log</h2></div><div className="toolbar"><button className="btn btn-secondary btn-icon" onClick={() => shift(-1)}><ChevronLeft size={16}/></button><input className="form-input" type="date" value={start} onChange={e => setStart(e.target.value)}/><input className="form-input" type="date" value={end} onChange={e => setEnd(e.target.value)}/><button className="btn btn-secondary btn-icon" onClick={() => shift(1)}><ChevronRight size={16}/></button><select className="form-select" value={action} onChange={e => setAction(e.target.value)}><option>All</option>{actions.map(value => <option key={value}>{value}</option>)}</select><select className="form-select" value={staffId} onChange={e => setStaffId(e.target.value)}><option>All</option>{staff.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select><select className="form-select" value={entityType} onChange={e => setEntityType(e.target.value)}><option>All</option>{entityTypes.map(value => <option key={value}>{value}</option>)}</select><div className="search-bar"><Search size={16}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search changes…"/></div></div>
+    <div className="table-container"><table className="data-table"><thead><tr><th>Date & Time</th><th>Action</th><th>Type</th><th>Entity</th><th>Employee</th><th>Previous → New</th></tr></thead><tbody>{filtered.map(log => <tr key={log.id}><td>{formatDateTime(log.datetime)}</td><td><span className="badge badge-neutral">{log.action}</span></td><td>{log.entityType || '—'}</td><td>{log.entity}</td><td>{log.staffName || 'System'}</td><td className="audit-details">{log.beforeState || log.afterState ? describeChanges(log.beforeState, log.afterState) || log.details : log.details}</td></tr>)}</tbody></table></div></div>;
 }

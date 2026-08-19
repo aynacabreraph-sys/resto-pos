@@ -3,6 +3,7 @@ import Modal from '../common/Modal';
 import { formatDateTime } from '../../utils/formatters';
 import { calcItemTotal } from '../../utils/calculations';
 import { formatPaymentLabel, normalizePaymentLines } from '../../utils/payments';
+import { branding } from '../../config/branding';
 
 function hasItemDiscount(item) {
   return Number(item.discount || 0) > 0 || Number(item.discountAmount || 0) > 0;
@@ -33,7 +34,7 @@ export default function ReceiptModal({ transaction, onClose }) {
 
   function buildReceiptRows() {
     const rows = [
-      { type: 'center', text: '92 PARAMETERS CAFE', bold: true },
+      { type: 'center', text: branding.businessName, bold: true },
       { type: 'space' },
       { type: 'center', text: 'THIS IS NOT AN OFFICIAL RECEIPT.' },
       { type: 'center', text: 'PLEASE ASK FOR BIR SERVICE INVOICE' },
@@ -44,9 +45,8 @@ export default function ReceiptModal({ transaction, onClose }) {
 
     (t.items || []).forEach(item => {
       rows.push({ type: 'pair', left: `${item.quantity} x ${item.name}`, right: formatReceiptCurrency(calcItemTotal(item)) });
+      if (item.modifiers?.length) rows.push({ type: 'text', text: `  ${item.modifiers.map(modifier => modifier.name).join(', ')}` });
       if (item.note) rows.push({ type: 'text', text: `  Note: ${item.note}` });
-      if (Number(item.discount || 0) > 0) rows.push({ type: 'pair', left: '  Discount', right: `-${item.discount}%` });
-      if (Number(item.discountAmount || 0) > 0) rows.push({ type: 'pair', left: '  Cash discount', right: `-${formatReceiptCurrency(item.discountAmount)}` });
     });
 
     rows.push({ type: 'divider' });
@@ -55,9 +55,7 @@ export default function ReceiptModal({ transaction, onClose }) {
       if (t.orderDiscount > 0) rows.push({ type: 'pair', left: 'Order Discount', right: `-${t.orderDiscount}%` });
       if (t.orderDiscountAmount > 0) rows.push({ type: 'pair', left: 'Order Discount Cash', right: `-${formatReceiptCurrency(t.orderDiscountAmount)}` });
     }
-    if (Number(t.loyaltyDiscount || 0) > 0) {
-      rows.push({ type: 'pair', left: 'Loyalty Discount', right: `-${formatReceiptCurrency(t.loyaltyDiscount)}` });
-    }
+    if (Number(t.discountTotal || 0) > 0) rows.push({ type: 'pair', left: 'Total Discount', right: `-${formatReceiptCurrency(t.discountTotal)}` });
 
     rows.push({ type: 'pair', left: 'Total:', right: formatReceiptCurrency(t.total), bold: true });
     if (paymentLines.length > 1) {
@@ -73,15 +71,8 @@ export default function ReceiptModal({ transaction, onClose }) {
     rows.push({ type: 'text', text: `Payment Method: ${formatPaymentLabel(paymentLines)}` });
     rows.push({ type: 'text', text: t.orderType });
     rows.push({ type: 'text', text: `Staff: ${t.staffName || 'Staff'}` });
-    if (t.customerName) {
-      rows.push({ type: 'space' });
-      rows.push({ type: 'text', text: `Member: ${t.customerName}` });
-      if (Number(t.loyaltyEarned || 0) > 0) rows.push({ type: 'text', text: `Points Earned: ${t.loyaltyEarned}` });
-      if (Number(t.loyaltyRedeemed || 0) > 0) rows.push({ type: 'text', text: `Points Redeemed: ${t.loyaltyRedeemed}` });
-      if (t.birthdayRewardRedeemed) rows.push({ type: 'text', text: 'Birthday Reward: Redeemed' });
-    }
     rows.push({ type: 'space' });
-    rows.push({ type: 'center', text: '--- Powered by 92Parameters ---' });
+    rows.push({ type: 'center', text: `--- Powered by ${branding.poweredBy} ---` });
     rows.push({ type: 'center', text: formatDateTime(t.datetime) });
     rows.push({ type: 'center', text: 'THANK YOU! SEE US AGAIN! :)', bold: true });
     return rows;
@@ -204,8 +195,8 @@ export default function ReceiptModal({ transaction, onClose }) {
     }>
       <div ref={ref} className="receipt" style={{ color: '#000', backgroundColor: '#fff', padding: '14px', fontFamily: '"Courier New", Courier, monospace', fontSize: '16px', lineHeight: 1.35 }}>
         <div style={{ textAlign: 'center', marginBottom: '10px' }}>
-          <img src="/logo.png?v=2" alt="92Parameters" style={{ width: '96px', height: 'auto', marginBottom: '8px' }} />
-          <div style={{ fontWeight: 'bold', fontSize: '17px' }}>92 PARAMETERS CAFE</div>
+          <img src={branding.logoUrl} alt={branding.appName} style={{ width: '96px', height: 'auto', marginBottom: '8px' }} />
+          <div style={{ fontWeight: 'bold', fontSize: '17px' }}>{branding.businessName}</div>
         </div>
 
         <div style={{ textAlign: 'center', fontSize: '13px', marginBottom: '10px', lineHeight: '1.25' }}>
@@ -229,25 +220,10 @@ export default function ReceiptModal({ transaction, onClose }) {
               <span>{item.quantity} x {item.name}</span>
               <span>{formatReceiptCurrency(calcItemTotal(item))}</span>
             </div>
+            {item.modifiers?.length > 0 && <div style={{ fontSize: '14px', paddingLeft: 12 }}>{item.modifiers.map(modifier => modifier.name).join(', ')}</div>}
             {item.note && (
               <div style={{ fontSize: '14px', paddingLeft: '12px', color: '#333', whiteSpace: 'pre-wrap' }}>
                 Note: {item.note}
-              </div>
-            )}
-            {hasItemDiscount(item) && (
-              <div style={{ fontSize: '14px', paddingLeft: '12px', color: '#333' }}>
-                {Number(item.discount || 0) > 0 && (
-                  <div className="receipt-line" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Discount</span>
-                    <span>-{item.discount}%</span>
-                  </div>
-                )}
-                {Number(item.discountAmount || 0) > 0 && (
-                  <div className="receipt-line" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Cash discount</span>
-                    <span>-{formatReceiptCurrency(item.discountAmount)}</span>
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -277,10 +253,10 @@ export default function ReceiptModal({ transaction, onClose }) {
             )}
           </div>
         )}
-        {Number(t.loyaltyDiscount || 0) > 0 && (
+        {Number(t.discountTotal || 0) > 0 && (
           <div className="receipt-line" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-            <span>Loyalty Discount</span>
-            <span>-{formatReceiptCurrency(t.loyaltyDiscount)}</span>
+            <span>Total Discount</span>
+            <span>-{formatReceiptCurrency(t.discountTotal)}</span>
           </div>
         )}
 
@@ -320,17 +296,9 @@ export default function ReceiptModal({ transaction, onClose }) {
           Staff: {t.staffName || 'Staff'}
         </div>
 
-        {t.customerName && (
-          <div style={{ marginBottom: '15px' }}>
-            Member: {t.customerName}<br />
-            {Number(t.loyaltyEarned || 0) > 0 && <>Points Earned: {t.loyaltyEarned}<br /></>}
-            {Number(t.loyaltyRedeemed || 0) > 0 && <>Points Redeemed: {t.loyaltyRedeemed}<br /></>}
-            {t.birthdayRewardRedeemed && <>Birthday Reward: Redeemed<br /></>}
-          </div>
-        )}
 
         <div style={{ textAlign: 'center', fontSize: '14px' }}>
-          <div style={{ marginBottom: '4px' }}>--- Powered by 92Parameters ---</div>
+          <div style={{ marginBottom: '4px' }}>--- Powered by {branding.poweredBy} ---</div>
           <div>{formatDateTime(t.datetime)}</div>
           <div style={{ marginTop: '10px', fontWeight: 'bold' }}>THANK YOU! SEE US AGAIN! :)</div>
         </div>

@@ -8,6 +8,8 @@ import { formatCurrency, formatDateTime } from '../utils/formatters';
 import { calcStockValue } from '../utils/calculations';
 import { getStockStatusLabel, getStockStatus } from '../utils/formatters';
 import { recordIngredientMovement } from '../utils/durability';
+import { recalculateAllProductCosts } from '../utils/costing';
+import { writeAudit } from '../utils/audit';
 
 const empty = { name: '', unit: 'g', inStock: '', unitCost: '', lowThreshold: '' };
 
@@ -58,22 +60,24 @@ export default function Ingredients() {
         await db.auditLog.add({ action: 'CREATE', entity: data.name, entityId: id, staffId: currentStaff?.id, staffName: currentStaff?.name, datetime: Date.now(), details: `Added with stock ${data.inStock}${data.unit}` });
         toast('Ingredient added'); 
       }
-      else { 
+      else {
+        const before = await db.ingredients.get(editing);
         await db.ingredients.update(editing, data); 
-        await db.auditLog.add({ action: 'UPDATE', entity: data.name, entityId: editing, staffId: currentStaff?.id, staffName: currentStaff?.name, datetime: Date.now(), details: `Updated stock to ${data.inStock}${data.unit}` });
+        await writeAudit({ action: 'UPDATE', entityType: 'ingredient', entity: data.name, entityId: editing, staff: currentStaff, beforeState: before, afterState: data });
         toast('Ingredient updated'); 
       }
-      setEditing(null); load();
+      await recalculateAllProductCosts(); setEditing(null); load();
     } catch {
       toast('Could not save ingredient. Please check the connection.', 'error');
     }
   }
 
   async function remove(id) {
+    const [baseLinks, modifierLinks] = await Promise.all([db.productIngredients.where('ingredientId').equals(id).toArray(), db.modifierOptionIngredients.where('ingredientId').equals(id).toArray()]);
+    if (baseLinks.length || modifierLinks.length) { toast(`This ingredient is used in ${baseLinks.length + modifierLinks.length} recipe link(s). Remove those links first.`, 'error'); return; }
     if (!confirm('Delete this ingredient?')) return;
     const item = await db.ingredients.get(id);
     await db.ingredients.delete(id);
-    await db.productIngredients.where('ingredientId').equals(id).delete();
     await db.auditLog.add({ action: 'DELETE', entity: item?.name || 'Unknown', entityId: id, staffId: currentStaff?.id, staffName: currentStaff?.name, datetime: Date.now(), details: `Deleted` });
     toast('Ingredient deleted', 'info'); load();
   }
@@ -237,14 +241,14 @@ export default function Ingredients() {
           <div className="form-row">
             <div className="form-group"><label className="form-label">Unit</label>
               <select className="form-select" value={form.unit} onChange={e => setForm({...form, unit: e.target.value})}>
-                <option value="g">Grams (g)</option><option value="ml">Milliliters (ml)</option><option value="pcs">Pieces (pcs)</option><option value="kg">Kilograms (kg)</option><option value="L">Liters (L)</option>
+                <option value="g">Grams (g)</option><option value="ml">Milliliters (ml)</option><option value="oz">Ounces (oz)</option><option value="pcs">Pieces (pcs)</option><option value="kg">Kilograms (kg)</option><option value="L">Liters (L)</option>
               </select>
             </div>
-            <div className="form-group"><label className="form-label">In Stock</label><input className="form-input" type="number" value={form.inStock} onChange={e => setForm({...form, inStock: e.target.value})} /></div>
+            <div className="form-group"><label className="form-label">In Stock</label><input className="form-input" type="number" step="0.0001" value={form.inStock} onChange={e => setForm({...form, inStock: e.target.value})} /></div>
           </div>
           <div className="form-row">
             <div className="form-group"><label className="form-label">Unit Cost (₱)</label><input className="form-input" type="number" value={form.unitCost} onChange={e => setForm({...form, unitCost: e.target.value})} /></div>
-            <div className="form-group"><label className="form-label">Low Stock Threshold</label><input className="form-input" type="number" value={form.lowThreshold} onChange={e => setForm({...form, lowThreshold: e.target.value})} /></div>
+            <div className="form-group"><label className="form-label">Low Stock Threshold</label><input className="form-input" type="number" step="0.0001" value={form.lowThreshold} onChange={e => setForm({...form, lowThreshold: e.target.value})} /></div>
           </div>
         </Modal>
       )}
@@ -260,7 +264,7 @@ export default function Ingredients() {
           </div>
           <div className="form-group">
             <label className="form-label">Quantity Delivered</label>
-            <input className="form-input" type="number" min="0" step="any" value={restockAmount} onChange={e => setRestockAmount(e.target.value)} autoFocus />
+            <input className="form-input" type="number" min="0" step="0.0001" value={restockAmount} onChange={e => setRestockAmount(e.target.value)} autoFocus />
           </div>
           <div className="form-group">
             <label className="form-label">Notes</label>

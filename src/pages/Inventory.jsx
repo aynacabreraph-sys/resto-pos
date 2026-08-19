@@ -6,6 +6,8 @@ import { useAuthStore } from '../stores/authStore';
 import { useToast } from '../components/common/Toast';
 import { formatCurrency } from '../utils/formatters';
 import { calcStockValue } from '../utils/calculations';
+import { recalculateAllProductCosts } from '../utils/costing';
+import { writeAudit } from '../utils/audit';
 
 const empty = { name: '', category: '', inStock: '', price: '', cost: '' };
 
@@ -38,18 +40,21 @@ export default function Inventory() {
         await db.auditLog.add({ action: 'CREATE', entity: data.name, entityId: id, staffId: currentStaff?.id, staffName: currentStaff?.name, datetime: Date.now(), details: `Added with stock ${data.inStock}` });
         toast('Item added'); 
       }
-      else { 
+      else {
+        const before = await db.inventory.get(editing);
         await db.inventory.update(editing, data); 
-        await db.auditLog.add({ action: 'UPDATE', entity: data.name, entityId: editing, staffId: currentStaff?.id, staffName: currentStaff?.name, datetime: Date.now(), details: `Updated stock to ${data.inStock}` });
+        await writeAudit({ action: 'UPDATE', entityType: 'inventory', entity: data.name, entityId: editing, staff: currentStaff, beforeState: before, afterState: data });
         toast('Item updated'); 
       }
-      setEditing(null); load();
+      await recalculateAllProductCosts(); setEditing(null); load();
     } catch {
       toast('Could not save item. Please check the connection.', 'error');
     }
   }
 
   async function remove(id) {
+    const [baseLinks, modifierLinks] = await Promise.all([db.productInventory.where('inventoryId').equals(id).toArray(), db.modifierOptionInventory.where('inventoryId').equals(id).toArray()]);
+    if (baseLinks.length || modifierLinks.length) { toast(`This inventory item is used in ${baseLinks.length + modifierLinks.length} recipe link(s). Remove those links first.`, 'error'); return; }
     if (!confirm('Delete this item?')) return;
     const item = await db.inventory.get(id);
     await db.inventory.delete(id); 
@@ -178,7 +183,7 @@ export default function Inventory() {
           <div className="form-group"><label className="form-label">Product Name</label><input className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} /></div>
           <div className="form-group"><label className="form-label">Category</label><input className="form-input" value={form.category} onChange={e => setForm({...form, category: e.target.value})} placeholder="e.g. Cups, Packaging" /></div>
           <div className="form-row">
-            <div className="form-group"><label className="form-label">In Stock</label><input className="form-input" type="number" value={form.inStock} onChange={e => setForm({...form, inStock: e.target.value})} /></div>
+            <div className="form-group"><label className="form-label">In Stock</label><input className="form-input" type="number" step="0.0001" value={form.inStock} onChange={e => setForm({...form, inStock: e.target.value})} /></div>
             <div className="form-group"><label className="form-label">Price (₱)</label><input className="form-input" type="number" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
           </div>
           <div className="form-group"><label className="form-label">Cost (₱)</label><input className="form-input" type="number" value={form.cost} onChange={e => setForm({...form, cost: e.target.value})} /></div>
@@ -196,7 +201,7 @@ export default function Inventory() {
           </div>
           <div className="form-group">
             <label className="form-label">Quantity Delivered</label>
-            <input className="form-input" type="number" min="0" step="any" value={restockAmount} onChange={e => setRestockAmount(e.target.value)} autoFocus />
+            <input className="form-input" type="number" min="0" step="0.0001" value={restockAmount} onChange={e => setRestockAmount(e.target.value)} autoFocus />
           </div>
           <div className="form-group">
             <label className="form-label">Notes</label>

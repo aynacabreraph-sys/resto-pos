@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Download, Database, ShieldCheck, RefreshCw, Activity, Clock } from 'lucide-react';
 import db from '../db/database';
 import { downloadJson, toBusinessDate } from '../utils/durability';
+import { branding } from '../config/branding';
 import { useToast } from '../components/common/Toast';
 import { formatCurrency, formatDateTime } from '../utils/formatters';
 
@@ -15,8 +16,11 @@ const TABLES = [
   ['ingredients', db.ingredients],
   ['productIngredients', db.productIngredients],
   ['productInventory', db.productInventory],
+  ['modifierGroups', db.modifierGroups], ['modifierOptions', db.modifierOptions],
+  ['modifierOptionIngredients', db.modifierOptionIngredients], ['modifierOptionInventory', db.modifierOptionInventory],
   ['transactions', db.transactions],
   ['runningBills', db.runningBills],
+  ['discountAuthorizations', db.discountAuthorizations], ['orderQueue', db.orderQueue], ['orderQueueItems', db.orderQueueItems],
   ['cashDrawer', db.cashDrawer],
   ['timeRecords', db.timeRecords],
   ['voidLog', db.voidLog],
@@ -52,7 +56,7 @@ export default function Maintenance() {
         productCount,
         ingredientCount,
         inventoryCount,
-        runningBillCount,
+        queueCount,
         transactionCount,
         auditCount,
         voidCount,
@@ -67,7 +71,7 @@ export default function Maintenance() {
         safeCount(db.products),
         safeCount(db.ingredients),
         safeCount(db.inventory),
-        safeCount(db.runningBills),
+        db.orderQueue.filteredCount([{ field: 'status', op: 'eq', value: 'active' }]),
         safeCount(db.transactions),
         safeCount(db.auditLog),
         safeCount(db.voidLog),
@@ -80,7 +84,7 @@ export default function Maintenance() {
       ]);
 
       setHealth({
-        counts: { staffCount, productCount, ingredientCount, inventoryCount, runningBillCount, transactionCount, auditCount, voidCount, summaryCount, movementCount },
+        counts: { staffCount, productCount, ingredientCount, inventoryCount, queueCount, transactionCount, auditCount, voidCount, summaryCount, movementCount },
         latestTxn,
         latestAudit,
         latestSummary,
@@ -95,7 +99,7 @@ export default function Maintenance() {
     setExporting(true);
     try {
       const entries = await Promise.all(TABLES.map(async ([name, table]) => [name, await table.toArray()]));
-      downloadJson(`92parameters-backup-${toBusinessDate()}.json`, {
+      downloadJson(`${branding.appName.toLowerCase().replace(/\s+/g, '')}-backup-${toBusinessDate()}.json`, {
         exportedAt: new Date().toISOString(),
         version: '1.0',
         tables: Object.fromEntries(entries),
@@ -123,7 +127,7 @@ export default function Maintenance() {
         <div className="stat-card"><div className="stat-label">Transactions</div><div className="stat-value">{health?.counts.transactionCount ?? '...'}</div></div>
         <div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{health?.counts.productCount ?? '...'}</div></div>
         <div className="stat-card"><div className="stat-label">Ingredients</div><div className="stat-value">{health?.counts.ingredientCount ?? '...'}</div></div>
-        <div className="stat-card"><div className="stat-label">Open Bills</div><div className="stat-value">{health?.counts.runningBillCount ?? '...'}</div></div>
+        <div className="stat-card"><div className="stat-label">Active Queue</div><div className="stat-value">{health?.counts.queueCount ?? '...'}</div></div>
       </div>
 
       <div className="dashboard-grid">

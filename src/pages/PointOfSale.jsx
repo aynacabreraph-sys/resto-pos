@@ -1,541 +1,125 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { Search, Clock, CreditCard, X, ScanLine } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Search } from 'lucide-react';
 import db from '../db/database';
 import { usePosStore } from '../stores/posStore';
 import { useAuthStore } from '../stores/authStore';
 import { useToast } from '../components/common/Toast';
 import Modal from '../components/common/Modal';
-import { formatCurrency, generateReceiptNo } from '../utils/formatters';
-import { calcCartSubtotal, calcCartTotal } from '../utils/calculations';
-import { recordIngredientMovement, updateDailySalesSummary } from '../utils/durability';
-import { closeRunningBill, deleteRunningBill, loadOpenBills, saveRunningBill } from '../utils/runningBills';
-import { adjustIngredientStock } from '../utils/stockAdjustments';
-import { formatPaymentLabel } from '../utils/payments';
-import { calculateEarnedPoints, calculateRedeemPoints, extractMemberCode, getBirthdayRewardStatus, getRedeemableAmount, isMembershipExpired, writeLoyaltyTransaction } from '../utils/loyalty';
 import ProductGrid from '../components/pos/ProductGrid';
 import CartPanel from '../components/pos/CartPanel';
 import PaymentModal from '../components/pos/PaymentModal';
 import ReceiptModal from '../components/pos/ReceiptModal';
-import { CATEGORIES } from '../config/categories';
+import ModifierModal from '../components/pos/ModifierModal';
+import DiscountModal from '../components/pos/DiscountModal';
+import QueuePanel from '../components/pos/QueuePanel';
+import CategoryManager from '../components/pos/CategoryManager';
+import { formatCurrency, generateReceiptNo } from '../utils/formatters';
+import { calculateProductCost, loadModifierGroups, recalculateAllProductCosts, snapshotSelections } from '../utils/costing';
+import { allocateDiscounts, itemConfiguredPrice, totalDiscount } from '../utils/discounts';
+import { activateQueue, cancelPager, markPagerHanded, reservePager } from '../utils/orderQueue';
+import { adjustIngredientStock } from '../utils/stockAdjustments';
+import { recordIngredientMovement, updateDailySalesSummary } from '../utils/durability';
+import { writeAudit } from '../utils/audit';
 
 export default function PointOfSale() {
-  const [products, setProducts] = useState([]);
-  const [category, setCategory] = useState('All');
-  const [subCategory, setSubCategory] = useState('All');
-  const [search, setSearch] = useState('');
-  const [showPayment, setShowPayment] = useState(false);
-  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
-  const [checkoutKey, setCheckoutKey] = useState(null);
-  const [receipt, setReceipt] = useState(null);
-  const [customerSearch, setCustomerSearch] = useState('');
-  const [customerResults, setCustomerResults] = useState([]);
-  const [selectedCustomer, setSelectedCustomer] = useState(null);
-  const [loyaltyRedeemAmount, setLoyaltyRedeemAmount] = useState('');
-  const [birthdayReward, setBirthdayReward] = useState(false);
-  const [showQrScanner, setShowQrScanner] = useState(false);
-  const [qrScanError, setQrScanError] = useState('');
-  const [runningBills, setRunningBills] = useState([]);
-  const [activeBill, setActiveBill] = useState(null);
-  const { cart, orderType, orderDiscount, orderDiscountAmount, addItem, clearCart, setCart } = usePosStore();
-  const currentStaff = useAuthStore(s => s.currentStaff);
-  const paymentLockRef = useRef(false);
-  const videoRef = useRef(null);
-  const scannerStreamRef = useRef(null);
-  const scannerFrameRef = useRef(null);
-  const scannerBusyRef = useRef(false);
-  const toast = useToast();
+  const [products, setProducts] = useState([]); const [categories, setCategories] = useState([]); const [subcategories, setSubcategories] = useState([]);
+  const [category, setCategory] = useState('All'); const [subCategory, setSubCategory] = useState('All'); const [search, setSearch] = useState('');
+  const [customizing, setCustomizing] = useState(null); const [discountOpen, setDiscountOpen] = useState(false); const [authorizations, setAuthorizations] = useState([]);
+  const [reservation, setReservation] = useState(null); const [pagerConfirm, setPagerConfirm] = useState(false); const [showPayment, setShowPayment] = useState(false); const [processing, setProcessing] = useState(false);
+  const [handoff, setHandoff] = useState(null); const [receipt, setReceipt] = useState(null); const [queueOpen, setQueueOpen] = useState(false); const [queueCount, setQueueCount] = useState(0); const [categoryManager, setCategoryManager] = useState(false);
+  const lock = useRef(false); const { cart, orderType, addItem, clearCart } = usePosStore(); const staff = useAuthStore(state => state.currentStaff); const toast = useToast();
 
-  useEffect(() => {
-    db.products.toArray().then(setProducts);
-    refreshBills();
-    const interval = setInterval(refreshBills, 10000);
-    const onFocus = () => refreshBills();
-    window.addEventListener('focus', onFocus);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, []);
-
-  async function refreshBills() {
-    setRunningBills(await loadOpenBills());
-  }
-
-  async function getCustomerFromScan(value) {
-    const code = extractMemberCode(value);
-    if (!code) throw new Error('No membership code found in QR.');
-    const card = await db.membershipCards.where('cardCode').equals(code).first();
-    if (card && card.status !== 'active') throw new Error(`Membership card is ${card.status}.`);
-    const customer = card?.customerId ? await db.customers.get(card.customerId) : await db.customers.where('memberCode').equals(code).first();
-    if (!customer) throw new Error('Membership card is not registered yet.');
-    if (customer.status === 'inactive') throw new Error('Membership is inactive.');
-    if (isMembershipExpired(customer)) throw new Error('Membership is expired.');
-    return customer;
-  }
-
-  async function searchCustomers(query) {
-    setCustomerSearch(query);
-    if (!query.trim()) {
-      setCustomerResults([]);
-      return;
-    }
-    const q = query.trim();
-    const code = extractMemberCode(q);
-    const [byCard, byCode, byName, byPhone] = await Promise.all([
-      db.membershipCards.where('cardCode').equals(code).first(),
-      db.customers.query({ filters: [{ field: 'memberCode', op: 'ilike', value: `%${code || q}%` }], limit: 5 }),
-      db.customers.query({ filters: [{ field: 'name', op: 'ilike', value: `%${q}%` }], limit: 5 }),
-      db.customers.query({ filters: [{ field: 'phone', op: 'ilike', value: `%${q}%` }], limit: 5 }),
-    ]);
-    const cardCustomer = byCard?.customerId ? await db.customers.get(byCard.customerId) : null;
-    const unique = [cardCustomer, ...byCode, ...byName, ...byPhone].filter(Boolean).filter((customer, index, arr) => arr.findIndex(c => c.id === customer.id) === index);
-    setCustomerResults(unique.filter(customer => customer.status !== 'inactive' && !isMembershipExpired(customer)).slice(0, 8));
-  }
-
-  function selectCustomer(customer) {
-    setSelectedCustomer(customer);
-    setCustomerSearch('');
-    setCustomerResults([]);
-    setLoyaltyRedeemAmount('');
-    setBirthdayReward(false);
-  }
-
-  function clearCustomer() {
-    setSelectedCustomer(null);
-    setCustomerSearch('');
-    setCustomerResults([]);
-    setLoyaltyRedeemAmount('');
-    setBirthdayReward(false);
-  }
-
-  function stopQrScanner() {
-    if (scannerFrameRef.current) cancelAnimationFrame(scannerFrameRef.current);
-    scannerFrameRef.current = null;
-    scannerBusyRef.current = false;
-    scannerStreamRef.current?.getTracks().forEach(track => track.stop());
-    scannerStreamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
-  }
-
-  async function handleQrValue(value) {
-    if (scannerBusyRef.current) return;
-    scannerBusyRef.current = true;
+  async function load() {
     try {
-      const customer = await getCustomerFromScan(value);
-      selectCustomer(customer);
-      toast(`Member selected: ${customer.name}`, 'success');
-      setShowQrScanner(false);
-    } catch (error) {
-      setQrScanError(error.message || 'Could not read this membership QR.');
-      scannerBusyRef.current = false;
-    }
+      const [productRows, categoryRows, subcategoryRows] = await Promise.all([recalculateAllProductCosts(), db.categories.query({ filters: [{ field: 'active', op: 'eq', value: true }], orderBy: 'sortOrder' }), db.subcategories.query({ filters: [{ field: 'active', op: 'eq', value: true }], orderBy: 'sortOrder' })]);
+      setProducts(productRows); setCategories(categoryRows); setSubcategories(subcategoryRows);
+    } catch (error) { console.error(error); toast('The POS operations database migration must be applied.', 'error'); }
   }
+  useEffect(() => { load(); }, []);
+  useEffect(() => { const max = cart.reduce((sum, item) => sum + item.quantity, 0); if (authorizations.length > max) setAuthorizations(rows => rows.slice(0, max)); }, [cart]);
 
-  useEffect(() => {
-    if (!showQrScanner) {
-      stopQrScanner();
-      return;
-    }
+  const allocations = useMemo(() => { try { return allocateDiscounts(cart, authorizations); } catch { return []; } }, [cart, authorizations]);
+  const discountTotal = totalDiscount(allocations);
+  const subtotal = cart.reduce((sum, item) => sum + itemConfiguredPrice(item) * item.quantity, 0);
+  const total = Math.max(0, subtotal - discountTotal);
+  const visibleSubs = category === 'All' ? [] : subcategories.filter(row => row.categoryId === categories.find(c => c.name === category)?.id);
 
-    let cancelled = false;
-    async function startScanner() {
-      setQrScanError('');
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setQrScanError('Camera access is not available in this browser.');
-        return;
-      }
-      if (!window.BarcodeDetector) {
-        setQrScanError('Camera QR scanning is not supported here. Use Chrome on Android or search the member manually.');
-        return;
-      }
-      try {
-        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-          audio: false,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach(track => track.stop());
-          return;
-        }
-        scannerStreamRef.current = stream;
-        if (!videoRef.current) return;
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-
-        const scanFrame = async () => {
-          if (cancelled || !videoRef.current || scannerBusyRef.current) return;
-          try {
-            const codes = await detector.detect(videoRef.current);
-            const value = codes?.[0]?.rawValue;
-            if (value) {
-              await handleQrValue(value);
-              return;
-            }
-          } catch (error) {
-            setQrScanError('Could not read the camera frame. Try better lighting or use manual search.');
-          }
-          scannerFrameRef.current = requestAnimationFrame(scanFrame);
-        };
-        scannerFrameRef.current = requestAnimationFrame(scanFrame);
-      } catch (error) {
-        setQrScanError('Camera permission was blocked or no camera was found.');
-      }
-    }
-
-    startScanner();
-    return () => {
-      cancelled = true;
-      stopQrScanner();
-    };
-  }, [showQrScanner]);
-
-  async function saveBill() {
-    if (cart.length === 0) return;
-    const tableName = activeBill?.tableName || window.prompt('Table name / number?');
-    if (!tableName) return;
-    const items = cart.map(i => ({ ...i, note: (i.note || '').trim() }));
+  async function chooseProduct(product) {
+    const groups = await loadModifierGroups(product.id);
+    if (!groups.length) addItem({ ...product, cost: await calculateProductCost(product.id) }, []);
+    else setCustomizing({ product: { ...product, cost: await calculateProductCost(product.id) }, groups });
+  }
+  async function addCustomized(selectedIds) {
+    const modifiers = await snapshotSelections(customizing.groups, selectedIds);
+    addItem(customizing.product, modifiers); setCustomizing(null);
+  }
+  function checkoutKey() { return window.crypto?.randomUUID?.() || `checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+  async function beginCheckout() {
+    if (!cart.length) return;
     try {
-      const id = await saveRunningBill({
-        billId: activeBill?.id,
-        tableName,
-        items,
-        orderType,
-        orderDiscount,
-        orderMarkup: 0,
-        orderDiscountAmount,
-        orderMarkupAmount: 0,
-        total: calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0),
-        staff: currentStaff,
-        expectedUpdatedAt: activeBill?.updatedAt,
-      });
-      setActiveBill({ ...(activeBill || {}), id, tableName, items, orderType, orderDiscount, orderMarkup: 0, orderDiscountAmount, orderMarkupAmount: 0, total: calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0), staffName: currentStaff?.name, updatedAt: Date.now() });
-      await refreshBills();
-      toast(activeBill ? 'Running bill updated' : 'Running bill saved', 'success');
-      clearCart();
-      setActiveBill(null);
-    } catch (error) {
-      await refreshBills();
-      toast(error.message || 'Running bill changed on another device. Reload it and try again.', 'error');
+      const currentAllocations = allocateDiscounts(cart, authorizations);
+      if (currentAllocations.length !== authorizations.length) throw new Error('Discount evidence is incomplete.');
+      const key = checkoutKey(); const next = await reservePager(key, staff); setReservation(next); setPagerConfirm(true);
+    } catch (error) { toast(error.message || 'Could not reserve a pager.', 'error'); }
+  }
+  async function cancelReservation() { if (reservation) await cancelPager(reservation.checkoutKey); setReservation(null); setPagerConfirm(false); }
+
+  async function deductRecipe(item, transactionId, receiptNo) {
+    const ingredientLinks = await db.productIngredients.where('productId').equals(item.productId).toArray();
+    const inventoryLinks = await db.productInventory.where('productId').equals(item.productId).toArray();
+    for (const modifier of item.modifiers || []) {
+      ingredientLinks.push(...await db.modifierOptionIngredients.where('optionId').equals(modifier.id).toArray());
+      inventoryLinks.push(...await db.modifierOptionInventory.where('optionId').equals(modifier.id).toArray());
+    }
+    for (const link of ingredientLinks) {
+      const ingredient = await db.ingredients.get(link.ingredientId); if (!ingredient) continue;
+      const quantity = Number(link.quantity) * Number(item.quantity); const { beforeStock, afterStock } = await adjustIngredientStock(ingredient, -quantity);
+      await recordIngredientMovement({ ingredient, ingredientId: ingredient.id, transactionId, receiptNo, type: 'DEDUCT', quantity, beforeStock, afterStock, staff, productName: item.name });
+      await writeAudit({ action: 'DEDUCT', entityType: 'ingredient', entity: ingredient.name, entityId: ingredient.id, staff, beforeState: { inStock: beforeStock, unit: ingredient.unit }, afterState: { inStock: afterStock, unit: ingredient.unit }, details: `${quantity}${ingredient.unit} used for ${item.quantity} × ${item.name}; Stock: ${beforeStock}${ingredient.unit} → ${afterStock}${ingredient.unit}` });
+    }
+    for (const link of inventoryLinks) {
+      const inventory = await db.inventory.get(link.inventoryId); if (!inventory) continue;
+      await db.inventory.update(inventory.id, { inStock: Math.max(0, Number(inventory.inStock) - Number(link.quantity) * Number(item.quantity)) });
     }
   }
 
-  function loadBill(bill) {
-    setActiveBill(bill);
-    setCart(bill.items || [], bill.orderType || 'Dine In', bill.orderDiscount || 0, 0, bill.orderDiscountAmount || 0, 0);
-  }
-
-  async function closeBill() {
-    if (!activeBill) return;
-    if (!window.confirm(`Close running bill for ${activeBill.tableName}? This will discard the open tab without charging.`)) return;
-    await deleteRunningBill(activeBill.id);
-    clearCart();
-    setActiveBill(null);
-    await refreshBills();
-    toast('Running bill closed', 'info');
-  }
-
-  function createCheckoutKey() {
-    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
-    return `checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  }
-
-  function openPayment() {
-    if (cart.length === 0 || showPayment || isProcessingPayment) return;
-    setCheckoutKey(createCheckoutKey());
-    setShowPayment(true);
-  }
-
-  async function handlePayment(paymentLines, cashReceived) {
-    if (paymentLockRef.current) return;
-    paymentLockRef.current = true;
-    setIsProcessingPayment(true);
+  async function handlePayment(payment) {
+    if (lock.current) return; lock.current = true; setProcessing(true);
+    let transactionId = null;
     try {
-      const orderTotal = calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0);
-      const maxLoyaltyDiscount = selectedCustomer ? getRedeemableAmount(selectedCustomer, orderTotal) : 0;
-      const loyaltyDiscount = Math.min(maxLoyaltyDiscount, Math.max(0, Number(loyaltyRedeemAmount || 0)));
-      const loyaltyRedeemed = calculateRedeemPoints(loyaltyDiscount);
-      const total = Math.max(0, orderTotal - loyaltyDiscount);
-      const loyaltyEarned = selectedCustomer ? calculateEarnedPoints(total) : 0;
-      const birthdayStatus = selectedCustomer ? getBirthdayRewardStatus(selectedCustomer) : { eligible: false };
-      const birthdayRewardRedeemed = Boolean(selectedCustomer && birthdayReward && birthdayStatus.eligible);
-      const cleanPaymentLines = paymentLines.map(line => ({ method: line.method, amount: Number(line.amount || 0) })).filter(line => line.amount > 0);
-      const paidTotal = cleanPaymentLines.reduce((sum, line) => sum + line.amount, 0);
-      if (paidTotal < total) throw new Error('Payment is not complete yet.');
-      if (paidTotal > total && !cleanPaymentLines.some(line => line.method === 'Cash')) throw new Error('Only cash payments can be above the amount due.');
-      const changeDue = Math.max(0, paidTotal - total);
-      const appliedPaymentLines = cleanPaymentLines
-        .map(line => line.method === 'Cash' ? { ...line, amount: Math.max(0, line.amount - changeDue) } : line)
-        .filter(line => line.amount > 0);
-      const method = appliedPaymentLines.length ? formatPaymentLabel(appliedPaymentLines) : 'Loyalty';
-      const receiptNo = generateReceiptNo();
-      const currentCheckoutKey = checkoutKey || createCheckoutKey();
-      const items = cart.map(i => ({ ...i, note: (i.note || '').trim() }));
-      const txn = {
-        receiptNo, checkoutKey: currentCheckoutKey, datetime: Date.now(), orderType,
-        items, paymentMethod: method,
-        paymentLines: appliedPaymentLines,
-        orderDiscount, orderMarkup: 0, orderDiscountAmount, orderMarkupAmount: 0, subtotal: calcCartSubtotal(cart),
-        customerId: selectedCustomer?.id || null, customerName: selectedCustomer?.name || null, memberCode: selectedCustomer?.memberCode || null,
-        loyaltyEarned, loyaltyRedeemed, loyaltyDiscount, birthdayRewardRedeemed,
-        total, cashReceived,
-        staffId: currentStaff?.id, staffName: currentStaff?.name, status: 'completed',
-      };
-      let transactionId;
-      try {
-        transactionId = await db.transactions.add(txn);
-      } catch (error) {
-        if (error?.code === '23505') {
-          throw new Error('This payment is already being processed.');
-        }
-        const message = String(error?.message || '');
-        const canUseLegacyInsert = error?.code === 'PGRST204' || error?.code === '42703' || message.includes('checkoutKey');
-        if (!canUseLegacyInsert) throw error;
-        if (selectedCustomer) {
-          throw new Error('Membership database migration is required before charging member sales.');
-        }
-        const { checkoutKey: _checkoutKey, paymentLines: _paymentLines, customerId: _customerId, customerName: _customerName, memberCode: _memberCode, loyaltyEarned: _loyaltyEarned, loyaltyRedeemed: _loyaltyRedeemed, loyaltyDiscount: _loyaltyDiscount, birthdayRewardRedeemed: _birthdayRewardRedeemed, orderDiscount: _orderDiscount, orderMarkup: _orderMarkup, orderDiscountAmount: _orderDiscountAmount, orderMarkupAmount: _orderMarkupAmount, subtotal: _subtotal, ...legacyTxn } = txn;
-        transactionId = await db.transactions.add(legacyTxn);
-      }
-      const savedTxn = { ...txn, id: transactionId };
-      const summaryUpdated = await updateDailySalesSummary(savedTxn);
-      if (selectedCustomer && (loyaltyEarned || loyaltyRedeemed || birthdayRewardRedeemed)) {
-        if (loyaltyRedeemed) {
-          await writeLoyaltyTransaction({
-            customer: selectedCustomer,
-            transactionId,
-            receiptNo,
-            type: 'REDEEM',
-            points: -loyaltyRedeemed,
-            amount: loyaltyDiscount,
-            details: `Redeemed ${loyaltyRedeemed} points for ${formatCurrency(loyaltyDiscount)} discount`,
-            staff: currentStaff,
-          });
-        }
-        if (loyaltyEarned) {
-          await writeLoyaltyTransaction({
-            customer: selectedCustomer,
-            transactionId,
-            receiptNo,
-            type: 'EARN',
-            points: loyaltyEarned,
-            amount: total,
-            details: `Earned from sale ${receiptNo}`,
-            staff: currentStaff,
-          });
-        }
-        if (birthdayRewardRedeemed) {
-          const year = new Date().getFullYear();
-          await db.customers.update(selectedCustomer.id, { birthdayRewardYear: year, updatedAt: Date.now() });
-          await db.loyaltyTransactions.add({
-            customerId: selectedCustomer.id,
-            customerName: selectedCustomer.name,
-            memberCode: selectedCustomer.memberCode,
-            transactionId,
-            receiptNo,
-            type: 'BIRTHDAY_REWARD',
-            points: 0,
-            amount: 0,
-            beforePoints: Number(selectedCustomer.pointsBalance || 0),
-            afterPoints: Number(selectedCustomer.pointsBalance || 0),
-            details: 'Birthday month reward redeemed: free cake slice and coffee',
-            staffId: currentStaff?.id,
-            staffName: currentStaff?.name,
-            datetime: Date.now(),
-          });
-        }
-      }
-      if (activeBill) await closeRunningBill(activeBill.id, transactionId);
-
-      // Deduct ingredients
+      const freshItems = [];
       for (const item of cart) {
-        const links = await db.productIngredients.where('productId').equals(item.productId).toArray();
-        for (const link of links) {
-          const ing = await db.ingredients.get(link.ingredientId);
-          if (ing) {
-            const deducted = link.quantity * item.quantity;
-            const { beforeStock, afterStock } = await adjustIngredientStock(ing, -deducted);
-            await db.auditLog.add({
-              action: 'DEDUCT',
-              entity: ing.name,
-              entityId: link.ingredientId,
-              staffId: currentStaff?.id,
-              staffName: currentStaff?.name,
-              datetime: Date.now(),
-              details: `Deducted ${deducted}${ing.unit} for ${item.quantity} x ${item.name} (${receiptNo}); stock ${beforeStock}${ing.unit} -> ${afterStock}${ing.unit}`
-            });
-            const movementRecorded = await recordIngredientMovement({
-              ingredient: ing,
-              ingredientId: link.ingredientId,
-              transactionId,
-              receiptNo,
-              type: 'DEDUCT',
-              quantity: deducted,
-              beforeStock,
-              afterStock,
-              staff: currentStaff,
-              productName: item.name,
-            });
-            if (!movementRecorded) {
-              await db.auditLog.add({
-                action: 'LEDGER_ERROR',
-                entity: ing.name,
-                entityId: link.ingredientId,
-                staffId: currentStaff?.id,
-                staffName: currentStaff?.name,
-                datetime: Date.now(),
-                details: `Ingredient movement ledger write failed for ${receiptNo}`
-              });
-            }
-          }
-        }
-
-        // Deduct inventory items (cups, lids, etc.)
-        const invLinks = await db.productInventory.where('productId').equals(item.productId).toArray();
-        for (const link of invLinks) {
-          const inv = await db.inventory.get(link.inventoryId);
-          if (inv) {
-            await db.inventory.update(link.inventoryId, { inStock: Math.max(0, inv.inStock - link.quantity * item.quantity) });
-          }
-        }
+        const baseCost = await calculateProductCost(item.productId); const modifierCost = (item.modifiers || []).reduce((sum, row) => sum + Number(row.cost || 0), 0);
+        freshItems.push({ ...item, cost: baseCost + modifierCost, configuredPrice: itemConfiguredPrice(item), note: (item.note || '').trim(), discountAllocations: allocations.filter(row => row.itemIndex === freshItems.length).map(({ unitIndex, type, idNumber, discountAmount }) => ({ unitIndex, type, idNumber, discountAmount })) });
       }
-
-      setReceipt(savedTxn);
-      setShowPayment(false);
-      setCheckoutKey(null);
-      clearCart();
-      setActiveBill(null);
-      clearCustomer();
-      refreshBills();
-      toast(summaryUpdated ? 'Transaction completed!' : 'Transaction completed, but summary update failed. Check Maintenance.', summaryUpdated ? 'success' : 'error');
+      const receiptNo = generateReceiptNo();
+      const transaction = { receiptNo, checkoutKey: reservation.checkoutKey, datetime: Date.now(), orderType, items: freshItems, paymentMethod: payment.method, paymentLines: [{ method: payment.method, amount: total }], subtotal, discountTotal, discountAuthorizationCount: allocations.length, total, cashReceived: payment.cashReceived, staffId: staff?.id, staffName: staff?.name, status: 'completed' };
+      transactionId = await db.transactions.add(transaction); const saved = { ...transaction, id: transactionId };
+      if (allocations.length) await db.discountAuthorizations.bulkAdd(allocations.map(row => ({ transactionId, receiptNo, type: row.type, idNumber: row.idNumber, photo: row.photo, itemIndex: row.itemIndex, unitIndex: row.unitIndex, productName: row.productName, advertisedPercent: row.advertisedPercent, effectivePercent: row.effectivePercent, discountAmount: row.discountAmount, staffId: staff?.id, staffName: staff?.name, createdAt: Date.now() })));
+      for (const item of freshItems) await deductRecipe(item, transactionId, receiptNo);
+      await updateDailySalesSummary(saved);
+      const queue = await activateQueue({ reservation, transaction: saved, items: freshItems, staff });
+      await writeAudit({ action: 'CREATE', entityType: 'queue', entity: `Pager ${reservation.pagerNumber}`, entityId: queue.id, staff, afterState: { receiptNo, pagerNumber: reservation.pagerNumber, status: 'active' } });
+      setShowPayment(false); setReservation(null); setAuthorizations([]); clearCart(); setHandoff({ queue, transaction: saved }); toast('Payment completed and order added to Queue.', 'success');
     } catch (error) {
-      console.error('Payment failed:', error);
-      toast(error.message || 'Could not complete transaction. Please try again or check the connection.', 'error');
-    } finally {
-      paymentLockRef.current = false;
-      setIsProcessingPayment(false);
-    }
+      console.error(error); if (!transactionId && reservation) await cancelPager(reservation.checkoutKey); toast(error.message || 'Checkout failed.', 'error');
+    } finally { lock.current = false; setProcessing(false); }
   }
+  async function confirmHandoff() { await markPagerHanded(handoff.queue.id); setReceipt(handoff.transaction); setHandoff(null); setQueueCount(count => count + 1); setQueueOpen(true); }
 
-  return (
-    <div className="pos-layout">
-      <div className="pos-menu">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
-          {runningBills.length > 0 && (
-            <div className="running-bills">
-              <div className="text-sm text-muted" style={{ fontWeight: 700, textTransform: 'uppercase' }}>Running Bills</div>
-              <div className="running-bill-list">
-                {runningBills.map(bill => (
-                  <button key={bill.id} className={`running-bill ${activeBill?.id === bill.id ? 'active' : ''}`} onClick={() => loadBill(bill)}>
-                    <Clock size={14} />
-                    <span>Table {bill.tableName}</span>
-                    <strong>{formatCurrency(bill.total || 0)}</strong>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div className="tabs" style={{ marginBottom: 0 }}>
-              {['All', ...Object.keys(CATEGORIES)].map(c => (
-                <button key={c} className={`tab ${category === c ? 'active' : ''}`} onClick={() => { setCategory(c); setSubCategory('All'); }}>{c}</button>
-              ))}
-            </div>
-            <div className="search-bar">
-              <Search size={16} />
-              <input placeholder="Search products..." value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
-          </div>
-
-          {category !== 'All' && CATEGORIES[category] && (
-            <div className="tabs" style={{ marginBottom: 0, padding: '4px 8px', background: 'var(--bg-card)', borderRadius: 'var(--radius-sm)' }}>
-              {['All', ...CATEGORIES[category]].map(sc => (
-                <button 
-                  key={sc} 
-                  className={`tab ${subCategory === sc ? 'active' : ''}`} 
-                  onClick={() => setSubCategory(sc)}
-                  style={{ padding: '6px 12px', fontSize: '0.75rem' }}
-                >
-                  {sc}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="loyalty-panel">
-            <div className="loyalty-member-row">
-              <div className="text-sm text-muted" style={{ fontWeight: 700, textTransform: 'uppercase' }}><CreditCard size={14} /> Member</div>
-              {selectedCustomer && <button className="btn btn-ghost btn-sm" onClick={clearCustomer}><X size={14} /> Remove</button>}
-            </div>
-            {selectedCustomer ? (
-              <div style={{ display: 'grid', gap: 8 }}>
-                <div className="flex-between">
-                  <div>
-                    <div style={{ fontWeight: 700 }}>{selectedCustomer.name}</div>
-                    <div className="text-muted text-sm">{selectedCustomer.memberCode} - {selectedCustomer.pointsBalance || 0} pts</div>
-                  </div>
-                  <span className="badge badge-success">Active</span>
-                </div>
-                {getBirthdayRewardStatus(selectedCustomer).eligible ? (
-                  <label className="checkbox-row">
-                    <input type="checkbox" checked={birthdayReward} onChange={e => setBirthdayReward(e.target.checked)} />
-                    <span>Redeem birthday reward: free cake slice and coffee</span>
-                  </label>
-                ) : (
-                  <div className="text-muted text-sm">Birthday promo: {getBirthdayRewardStatus(selectedCustomer).reason}</div>
-                )}
-                <div className="form-row">
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Redeem PHP</label>
-                    <input className="form-input" type="number" min="0" max={getRedeemableAmount(selectedCustomer, calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0))} value={loyaltyRedeemAmount} onChange={e => setLoyaltyRedeemAmount(e.target.value)} placeholder="0" />
-                  </div>
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Available</label>
-                    <div className="form-input" style={{ background: 'var(--bg-card)' }}>{formatCurrency(getRedeemableAmount(selectedCustomer, calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0)))}</div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div style={{ position: 'relative' }}>
-                <div className="member-search-row">
-                  <div className="search-bar" style={{ maxWidth: '100%', width: '100%' }}>
-                    <Search size={16} />
-                    <input placeholder="Search member name, phone, or card code..." value={customerSearch} onChange={e => searchCustomers(e.target.value)} />
-                  </div>
-                  <button className="btn btn-primary btn-sm" onClick={() => setShowQrScanner(true)}><ScanLine size={14} /> Scan</button>
-                </div>
-                {customerResults.length > 0 && (
-                  <div className="card" style={{ position: 'absolute', left: 0, right: 0, top: 'calc(100% + 6px)', zIndex: 20, padding: 8 }}>
-                    {customerResults.map(customer => (
-                      <button key={customer.id} className="btn btn-ghost w-full" style={{ justifyContent: 'space-between' }} onClick={() => selectCustomer(customer)}>
-                        <span>{customer.name}</span>
-                        <span className="text-muted text-sm">{customer.pointsBalance || 0} pts</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-        <ProductGrid products={products} category={category} subCategory={subCategory} searchQuery={search} onAdd={addItem} />
-      </div>
-      <CartPanel onCharge={openPayment} activeBill={activeBill} onSaveBill={saveBill} onCloseBill={closeBill} checkoutDisabled={showPayment || isProcessingPayment} loyaltyCustomer={selectedCustomer} loyaltyDiscount={Math.min(selectedCustomer ? getRedeemableAmount(selectedCustomer, calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0)) : 0, Math.max(0, Number(loyaltyRedeemAmount || 0)))} />
-      {showQrScanner && (
-        <Modal title="Scan Membership QR" onClose={() => setShowQrScanner(false)} footer={
-          <>
-            <button className="btn btn-secondary" onClick={() => setShowQrScanner(false)}>Close</button>
-          </>
-        }>
-          <div className="qr-scanner">
-            <video ref={videoRef} className="qr-scanner-video" muted playsInline autoPlay />
-            <div className="qr-scanner-frame"><ScanLine size={32} /></div>
-          </div>
-          <p className="text-center text-muted text-sm" style={{ marginTop: 12 }}>Point the camera at the member card QR code.</p>
-          {qrScanError && <div className="alert-banner alert-warning" style={{ marginTop: 12 }}><span>{qrScanError}</span></div>}
-        </Modal>
-      )}
-      {showPayment && <PaymentModal total={Math.max(0, calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0) - Math.min(selectedCustomer ? getRedeemableAmount(selectedCustomer, calcCartTotal(cart, orderDiscount, 0, orderDiscountAmount, 0)) : 0, Math.max(0, Number(loyaltyRedeemAmount || 0))))} onConfirm={handlePayment} onClose={() => { if (!isProcessingPayment) setShowPayment(false); }} isProcessing={isProcessingPayment} />}
-      {receipt && <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)} />}
-    </div>
-  );
+  return <div className="pos-layout">
+    <main className="pos-menu"><div className="pos-toolbar"><div className="tabs"><button className={`tab ${category === 'All' ? 'active' : ''}`} onClick={() => { setCategory('All'); setSubCategory('All'); }}>All</button>{categories.map(row => <button key={row.id} className={`tab ${category === row.name ? 'active' : ''}`} onClick={() => { setCategory(row.name); setSubCategory('All'); }}>{row.name}</button>)}</div><div className="search-bar"><Search size={16}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"/></div>{staff?.role === 'owner' && <button className="btn btn-secondary btn-sm" onClick={() => setCategoryManager(true)}>Manage Categories</button>}</div>
+      {visibleSubs.length > 0 && <div className="tabs subcategory-tabs"><button className={`tab ${subCategory === 'All' ? 'active' : ''}`} onClick={() => setSubCategory('All')}>All</button>{visibleSubs.map(row => <button key={row.id} className={`tab ${subCategory === row.name ? 'active' : ''}`} onClick={() => setSubCategory(row.name)}>{row.name}</button>)}</div>}
+      <ProductGrid products={products} category={category} subCategory={subCategory} searchQuery={search} onAdd={chooseProduct}/>
+    </main>
+    <CartPanel discountTotal={discountTotal} discountCount={authorizations.length} onDiscount={() => setDiscountOpen(true)} onCheckout={beginCheckout} checkoutDisabled={processing || pagerConfirm || showPayment} queueOpen={queueOpen} queueCount={queueCount} onToggleQueue={() => setQueueOpen(open => !open)}/>
+    <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} onCountChange={setQueueCount}/>
+    {customizing && <ModifierModal {...customizing} onConfirm={addCustomized} onClose={() => setCustomizing(null)}/>}
+    {discountOpen && <DiscountModal authorizations={authorizations} onChange={setAuthorizations} maxCount={cart.reduce((sum, item) => sum + item.quantity, 0)} onClose={() => setDiscountOpen(false)}/>}
+    {categoryManager && <CategoryManager categories={categories} subcategories={subcategories} onChanged={load} onClose={() => setCategoryManager(false)}/>}
+    {pagerConfirm && <Modal title="Pager Assignment" onClose={cancelReservation} footer={<><button className="btn btn-secondary btn-lg" onClick={cancelReservation}>Cancel</button><button className="btn btn-primary btn-lg" onClick={() => { setPagerConfirm(false); setShowPayment(true); }}>OK — Use Pager {reservation?.pagerNumber}</button></>}><div className="pager-confirm"><small>GIVE THIS PAGER TO THE CUSTOMER</small><strong>{reservation?.pagerNumber}</strong><p>Confirm the pager before taking payment.</p></div></Modal>}
+    {showPayment && <PaymentModal total={total} onConfirm={handlePayment} onClose={async () => { if (!processing) { setShowPayment(false); await cancelReservation(); } }} isProcessing={processing}/>}
+    {handoff && <Modal title="Pager Handoff Required" onClose={() => {}} footer={<button className="btn btn-primary btn-handoff" onClick={confirmHandoff}>YES — PAGER {handoff.queue.pagerNumber} WAS GIVEN</button>}><div className="pager-confirm handoff"><small>DID YOU GIVE THE PAGER TO THE CUSTOMER?</small><strong>{handoff.queue.pagerNumber}</strong><p>This screen stays open until handoff is confirmed.</p></div></Modal>}
+    {receipt && <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)}/>}
+  </div>;
 }

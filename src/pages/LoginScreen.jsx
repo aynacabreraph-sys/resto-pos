@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import db from '../db/database';
+import { branding } from '../config/branding';
 
 export default function LoginScreen() {
   const [pin, setPin] = useState('');
@@ -8,7 +9,7 @@ export default function LoginScreen() {
   const login = useAuthStore(s => s.login);
 
   const submitPin = useCallback(async (value) => {
-    if (value.length !== 4) return;
+    if (value.length !== 6) return;
     const staff = await db.staff.where('pin').equals(value).first();
     if (staff?.role === 'staff') {
       setError('This profile is for time tracking only');
@@ -21,11 +22,11 @@ export default function LoginScreen() {
     if (key === 'clear') { setPin(''); setError(''); return; }
     if (key === 'back') { setPin(p => p.slice(0, -1)); setError(''); return; }
     if (key === 'submit') { await submitPin(pin); return; }
-    if (!/^\d$/.test(key) || pin.length >= 4) return;
+    if (!/^\d$/.test(key) || pin.length >= 6) return;
 
     const newPin = pin + key;
     setPin(newPin);
-    if (newPin.length === 4) {
+    if (newPin.length === 6) {
       const staff = await db.staff.where('pin').equals(newPin).first();
       if (staff?.role === 'staff') {
         setError('This profile is for time tracking only');
@@ -63,11 +64,11 @@ export default function LoginScreen() {
     <div className="login-screen">
       <div className="login-card">
         <div style={{ marginBottom: 8 }}>
-          <div className="logo-icon login-logo">92</div>
+          <div className="logo-icon login-logo">{branding.logoShort}</div>
         </div>
-        <h1>92Parameters</h1>
+        <h1>{branding.appName}</h1>
         <p>Enter your PIN to clock in</p>
-        <div className="pin-display">{pin.split('').map(() => '●').join(' ') || '○ ○ ○ ○'}</div>
+        <div className="pin-display">{pin.split('').map(() => '●').join(' ') || '○ ○ ○ ○ ○ ○'}</div>
         {error && <p style={{ color: 'var(--danger)', marginBottom: 16, fontSize: '0.85rem' }}>{error}</p>}
         <div className="pin-pad">
           {keys.map(k => (
