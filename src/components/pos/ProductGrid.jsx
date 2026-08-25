@@ -12,12 +12,12 @@ export default function ProductGrid({ products, category, subCategory, searchQue
   return (
     <div className="product-grid">
       {filtered.map(p => (
-        <div key={p.id} className={`product-card ${!p.isAvailable ? 'unavailable' : ''}`} onClick={() => p.isAvailable && onAdd(p)}>
+        <button type="button" key={p.id} className={`product-card ${!p.isAvailable ? 'unavailable' : ''}`} disabled={!p.isAvailable} onClick={() => p.isAvailable && onAdd(p)}>
           <div className="product-emoji">{p.emoji || '☕'}</div>
           <div className="product-name">{p.name}</div>
           <div className="product-price">{formatCurrency(p.price)}</div>
           {!p.isAvailable && <span className="badge badge-danger" style={{ position: 'absolute', top: 8, right: 8 }}>Off</span>}
-        </div>
+        </button>
       ))}
       {filtered.length === 0 && <div className="empty-state"><p>No products found</p></div>}
     </div>
