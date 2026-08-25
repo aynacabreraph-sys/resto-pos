@@ -63,6 +63,7 @@ export default function TransactionReport() {
   const [staffFilter, setStaffFilter] = useState('All');
   const [selected, setSelected] = useState(null);
   const [showReceipt, setShowReceipt] = useState(null);
+  const [viewPaymentEvidence, setViewPaymentEvidence] = useState(null);
   const [showVoid, setShowVoid] = useState(null);
   const [page, setPage] = useState(0);
   const [voidReason, setVoidReason] = useState('');
@@ -202,7 +203,7 @@ export default function TransactionReport() {
     downloadJson(`transactions-${Date.now()}.json`, {
       exportedAt: new Date().toISOString(),
       filters: { range, customStart, customEnd, paymentFilter, statusFilter, staffFilter, search },
-      transactions: filtered,
+      transactions: filtered.map(({ paymentEvidencePhoto, ...transaction }) => ({ ...transaction, paymentEvidencePresent: Boolean(paymentEvidencePhoto) })),
     });
   }
 
@@ -320,6 +321,7 @@ export default function TransactionReport() {
             <div><span className="form-label">Order Type</span><div><span className="badge badge-neutral">{selected.orderType}</span></div></div>
             <div><span className="form-label">Payment</span><div>{formatPaymentLabel(selected)}</div></div>
           </div>
+          {selected.paymentEvidencePhoto && <div className="card mb-16"><span className="form-label">Payment Receipt Evidence</span><button className="payment-evidence-preview" onClick={() => setViewPaymentEvidence(selected.paymentEvidencePhoto)}><img src={selected.paymentEvidencePhoto} alt={`${selected.paymentMethod} receipt evidence`}/><span>View captured {selected.paymentMethod} receipt</span></button></div>}
           <div className="form-row mb-16">
             <div><span className="form-label">Staff</span><div>{selected.staffName || '—'}</div></div>
             <div><span className="form-label">Status</span><div>{selected.status === 'void' ? <span className="void-stamp">VOID</span> : <span className="badge badge-success">Completed</span>}</div></div>
@@ -338,7 +340,7 @@ export default function TransactionReport() {
                       {item.note && <div className="text-muted text-sm" style={{ whiteSpace: 'pre-wrap' }}>Note: {item.note}</div>}
                     </td><td>{item.quantity}</td><td>{formatUnitPrice(item)}</td>
                     <td>{item.modifiers?.length || 0}</td>
-                    <td>{formatCurrency(item.cost || 0)}</td>
+                    <td><strong>{formatCurrency(item.cost || 0)}</strong>{item.materialCost !== undefined && <div className="text-muted text-sm">Materials {formatCurrency(item.materialCost)} · Labor {formatCurrency(item.directLaborCost || 0)} · Modifiers {formatCurrency(item.modifierCost || 0)}</div>}</td>
                     <td style={{ fontWeight: 600 }}>{formatCurrency(calcItemTotal(item))}</td>
                   </tr>
                 ))}
@@ -383,6 +385,7 @@ export default function TransactionReport() {
       )}
 
       {showReceipt && <ReceiptModal transaction={showReceipt} onClose={() => setShowReceipt(null)} />}
+      {viewPaymentEvidence && <Modal title="Payment Receipt Evidence" large onClose={() => setViewPaymentEvidence(null)} footer={<button className="btn btn-primary" onClick={() => setViewPaymentEvidence(null)}>Close</button>}><img className="payment-evidence-full" src={viewPaymentEvidence} alt="Captured payment receipt"/></Modal>}
     </div>
   );
 }

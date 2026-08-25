@@ -1,16 +1,21 @@
 import db from '../db/database';
-import { recipeComponentCost, roundMoney } from './posMath';
+import { productCostBreakdown, recipeComponentCost, roundMoney } from './posMath';
 export { roundMoney, roundQuantity, profitMargin, countGraphemes } from './posMath';
 
-export async function calculateProductCost(productId) {
-  const [ingredientLinks, inventoryLinks, ingredients, inventory] = await Promise.all([
+export async function calculateProductCostBreakdown(productId) {
+  const [product, ingredientLinks, inventoryLinks, ingredients, inventory] = await Promise.all([
+    db.products.get(productId),
     db.productIngredients.where('productId').equals(productId).toArray(),
     db.productInventory.where('productId').equals(productId).toArray(),
     db.ingredients.toArray(), db.inventory.toArray(),
   ]);
   const ingredientCost = recipeComponentCost(ingredientLinks, ingredients, 'ingredientId', 'unitCost');
   const inventoryCost = recipeComponentCost(inventoryLinks, inventory, 'inventoryId', 'cost');
-  return roundMoney(ingredientCost + inventoryCost);
+  return productCostBreakdown(ingredientCost, inventoryCost, product?.directLaborCost || 0);
+}
+
+export async function calculateProductCost(productId) {
+  return (await calculateProductCostBreakdown(productId)).total;
 }
 
 export async function recalculateProductCost(productId) {

@@ -13,16 +13,13 @@ export async function cancelPager(checkoutKey) {
 }
 
 export async function activateQueue({ reservation, transaction, items, staff }) {
-  const queuedAt = Date.now();
-  await db.orderQueue.update(reservation.id, {
-    transactionId: transaction.id, receiptNo: transaction.receiptNo, status: 'active', orderType: transaction.orderType,
-    staffId: staff?.id, staffName: staff?.name, queuedAt,
+  const rows = await db.rpc('activate_reserved_queue', {
+    p_checkout_key: reservation.checkoutKey, p_transaction_id: transaction.id, p_receipt_no: transaction.receiptNo,
+    p_order_type: transaction.orderType, p_staff_id: staff?.id || null, p_staff_name: staff?.name || null, p_items: items,
   });
-  const units = items.flatMap((item, transactionItemIndex) => Array.from({ length: Number(item.quantity || 1) }, (_, unitIndex) => ({
-    queueId: reservation.id, transactionItemIndex, unitIndex, productId: item.productId, name: item.name, modifiers: item.modifiers || [], served: false,
-  })));
-  if (units.length) await db.orderQueueItems.bulkAdd(units);
-  return { ...reservation, transactionId: transaction.id, receiptNo: transaction.receiptNo, status: 'active', queuedAt };
+  const row = rows?.[0];
+  if (!row) throw new Error('Could not activate the queue order.');
+  return { ...reservation, id: row.queue_id, pagerNumber: row.pager_number, transactionId: transaction.id, receiptNo: transaction.receiptNo, status: 'active', queuedAt: row.queued_at };
 }
 
 export async function markPagerHanded(queueId) {
@@ -30,9 +27,19 @@ export async function markPagerHanded(queueId) {
 }
 
 export async function loadActiveQueue() {
-  const orders = await db.orderQueue.query({ filters: [{ field: 'status', op: 'eq', value: 'active' }], orderBy: 'queuedAt' });
-  const items = await db.orderQueueItems.toArray();
-  return orders.map(order => ({ ...order, items: items.filter(item => item.queueId === order.id).sort((a, b) => a.transactionItemIndex - b.transactionItemIndex || a.unitIndex - b.unitIndex) }));
+  return loadQueueOrders('active');
+}
+
+export async function loadCompletedQueue(start, end) {
+  return loadQueueOrders('completed', start, end);
+}
+
+async function loadQueueOrders(status, start, end) {
+  const filters = [{ field: 'status', op: 'eq', value: status }];
+  if (start) filters.push({ field: 'completedAt', op: 'gte', value: start });
+  if (end) filters.push({ field: 'completedAt', op: 'lte', value: end });
+  const orders = await db.orderQueue.query({ filters, orderBy: status === 'active' ? 'queuedAt' : 'completedAt', ascending: status === 'active' });
+  return Promise.all(orders.map(async order => ({ ...order, items: (await db.orderQueueItems.where('queueId').equals(order.id).toArray()).sort((a, b) => a.transactionItemIndex - b.transactionItemIndex || a.unitIndex - b.unitIndex) })));
 }
 
 export async function setQueueItemServed(item, served, queuedAt) {

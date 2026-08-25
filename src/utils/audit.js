@@ -1,6 +1,6 @@
 import db from '../db/database';
 
-const PRIVATE_KEYS = new Set(['pin', 'photo', 'photoIn', 'photoOut', 'profileImage']);
+const PRIVATE_KEYS = new Set(['pin', 'photo', 'photoIn', 'photoOut', 'profileImage', 'paymentEvidencePhoto']);
 export function sanitizeAuditState(state) {
   if (!state) return null;
   return Object.fromEntries(Object.entries(state).filter(([key]) => !PRIVATE_KEYS.has(key)).map(([key, value]) => [key, typeof value === 'object' && value !== null ? '[structured data]' : value]));
@@ -9,7 +9,7 @@ export function sanitizeAuditState(state) {
 export function describeChanges(beforeState, afterState) {
   const before = sanitizeAuditState(beforeState) || {};
   const after = sanitizeAuditState(afterState) || {};
-  const labels = { inStock: 'Stock', unitCost: 'Unit cost', lowThreshold: 'Low threshold', priceDelta: 'Price delta', hourlyRate: 'Hourly rate' };
+  const labels = { inStock: 'Stock', unitCost: 'Unit cost', lowThreshold: 'Low threshold', priceDelta: 'Price delta', hourlyRate: 'Hourly rate', directLaborCost: 'Direct labor cost', paymentEvidenceRequired: 'Payment evidence required' };
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter(key => String(before[key] ?? '') !== String(after[key] ?? ''))
     .map(key => `${labels[key] || key}: ${before[key] ?? '—'} → ${after[key] ?? '—'}`).join('; ');

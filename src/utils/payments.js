@@ -1,4 +1,7 @@
-export const PAYMENT_METHODS = ['Cash', 'GCash', 'Card', 'Bank Transfer', 'Grab', 'Foodpanda'];
+export const ACTIVE_PAYMENT_METHODS = ['Cash', 'GCash', 'Bank Transfer', 'Foodpanda'];
+export const PAYMENT_METHODS = ['Cash', 'GCash', 'Bank Transfer', 'Foodpanda', 'Card', 'Grab', 'Lalamove'];
+export function requiresPaymentEvidence(method) { return method === 'GCash' || method === 'Bank Transfer'; }
+export function isValidCashTender(value, total) { const tendered = Number(value); return value !== '' && Number.isFinite(tendered) && tendered >= 0 && tendered >= Number(total || 0); }
 
 export function normalizePaymentLines(transaction) {
   const lines = Array.isArray(transaction?.paymentLines) ? transaction.paymentLines : [];

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { allocateDiscounts, countGraphemes, nextAvailablePager, profitMargin, recipeComponentCost, roundQuantity, totalDiscount, validateModifierSelections } from '../src/utils/posMath.js';
+import { allocateDiscounts, countGraphemes, nextAvailablePager, productCostBreakdown, profitMargin, recipeComponentCost, roundQuantity, totalDiscount, validateModifierSelections } from '../src/utils/posMath.js';
+import { ACTIVE_PAYMENT_METHODS, isValidCashTender, requiresPaymentEvidence } from '../src/utils/payments.js';
 
 test('four-decimal quantities and margins', () => { assert.equal(roundQuantity(1.23456), 1.2346); assert.equal(profitMargin(100, 40), 60); assert.equal(profitMargin(0, 40), null); });
 test('recipe and modifier component COGS', () => { assert.equal(recipeComponentCost([{ ingredientId: 1, quantity: .125 }, { ingredientId: 2, quantity: 2 }], [{ id: 1, unitCost: 80 }, { id: 2, unitCost: 3.5 }], 'ingredientId', 'unitCost'), 17); });
@@ -9,3 +10,6 @@ test('discounts target highest configured units at 17.86%', () => { const rows =
 test('discount IDs are unique and count-limited', () => { assert.throws(() => allocateDiscounts([{ name: 'A', price: 1, quantity: 1 }], [{ idNumber: '1', photo: 'x' }, { idNumber: '2', photo: 'x' }])); assert.throws(() => allocateDiscounts([{ name: 'A', price: 1, quantity: 2 }], [{ idNumber: '1', photo: 'x' }, { idNumber: '1', photo: 'x' }])); });
 test('modifier min/max rules', () => { const groups = [{ required: true, minSelections: 1, maxSelections: 2, options: [{ id: 1 }, { id: 2 }, { id: 3 }] }]; assert.equal(validateModifierSelections(groups, []), false); assert.equal(validateModifierSelections(groups, [1, 2]), true); assert.equal(validateModifierSelections(groups, [1, 2, 3]), false); });
 test('pager cycling and exhaustion', () => { assert.equal(nextAvailablePager(10, []), 1); assert.equal(nextAvailablePager(1, [2, 3]), 4); assert.equal(nextAvailablePager(5, [1,2,3,4,5,6,7,8,9,10]), null); });
+test('direct labor is included once in base product COGS', () => { assert.deepEqual(productCostBreakdown(12.345, 3.5, 8.25), { ingredientCost: 12.35, inventoryCost: 3.5, materialCost: 15.85, directLaborCost: 8.25, total: 24.1 }); });
+test('new payment methods and evidence rules', () => { assert.deepEqual(ACTIVE_PAYMENT_METHODS, ['Cash', 'GCash', 'Bank Transfer', 'Foodpanda']); assert.equal(requiresPaymentEvidence('GCash'), true); assert.equal(requiresPaymentEvidence('Bank Transfer'), true); assert.equal(requiresPaymentEvidence('Foodpanda'), false); });
+test('cash tender must be manually present and cover the total', () => { assert.equal(isValidCashTender('', 100), false); assert.equal(isValidCashTender('99.99', 100), false); assert.equal(isValidCashTender('100', 100), true); assert.equal(isValidCashTender('500', 100), true); });

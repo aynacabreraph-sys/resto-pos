@@ -14,7 +14,7 @@ import DiscountModal from '../components/pos/DiscountModal';
 import QueuePanel from '../components/pos/QueuePanel';
 import CategoryManager from '../components/pos/CategoryManager';
 import { formatCurrency, generateReceiptNo } from '../utils/formatters';
-import { calculateProductCost, loadModifierGroups, recalculateAllProductCosts, snapshotSelections } from '../utils/costing';
+import { calculateProductCost, calculateProductCostBreakdown, loadModifierGroups, recalculateAllProductCosts, roundMoney, snapshotSelections } from '../utils/costing';
 import { allocateDiscounts, itemConfiguredPrice, totalDiscount } from '../utils/discounts';
 import { activateQueue, cancelPager, markPagerHanded, reservePager } from '../utils/orderQueue';
 import { adjustIngredientStock } from '../utils/stockAdjustments';
@@ -89,12 +89,13 @@ export default function PointOfSale() {
     try {
       const freshItems = [];
       for (const item of cart) {
-        const baseCost = await calculateProductCost(item.productId); const modifierCost = (item.modifiers || []).reduce((sum, row) => sum + Number(row.cost || 0), 0);
-        freshItems.push({ ...item, cost: baseCost + modifierCost, configuredPrice: itemConfiguredPrice(item), note: (item.note || '').trim(), discountAllocations: allocations.filter(row => row.itemIndex === freshItems.length).map(({ unitIndex, type, idNumber, discountAmount }) => ({ unitIndex, type, idNumber, discountAmount })) });
+        const breakdown = await calculateProductCostBreakdown(item.productId); const modifierCost = (item.modifiers || []).reduce((sum, row) => sum + Number(row.cost || 0), 0);
+        freshItems.push({ ...item, materialCost: breakdown.materialCost, directLaborCost: breakdown.directLaborCost, modifierCost: roundMoney(modifierCost), baseCost: breakdown.total, cost: roundMoney(breakdown.total + modifierCost), configuredPrice: itemConfiguredPrice(item), note: (item.note || '').trim(), discountAllocations: allocations.filter(row => row.itemIndex === freshItems.length).map(({ unitIndex, type, idNumber, discountAmount }) => ({ unitIndex, type, idNumber, discountAmount })) });
       }
       const receiptNo = generateReceiptNo();
-      const transaction = { receiptNo, checkoutKey: reservation.checkoutKey, datetime: Date.now(), orderType, items: freshItems, paymentMethod: payment.method, paymentLines: [{ method: payment.method, amount: total }], subtotal, discountTotal, discountAuthorizationCount: allocations.length, total, cashReceived: payment.cashReceived, staffId: staff?.id, staffName: staff?.name, status: 'completed' };
+      const transaction = { receiptNo, checkoutKey: reservation.checkoutKey, datetime: Date.now(), orderType, items: freshItems, paymentMethod: payment.method, paymentLines: [{ method: payment.method, amount: total }], subtotal, discountTotal, discountAuthorizationCount: allocations.length, total, cashReceived: payment.cashReceived, paymentEvidencePhoto: payment.paymentEvidencePhoto, paymentEvidenceRequired: Boolean(payment.paymentEvidenceRequired), staffId: staff?.id, staffName: staff?.name, status: 'completed' };
       transactionId = await db.transactions.add(transaction); const saved = { ...transaction, id: transactionId };
+      await writeAudit({ action: 'CREATE', entityType: 'transaction', entity: receiptNo, entityId: transactionId, staff, afterState: { receiptNo, paymentMethod: payment.method, paymentEvidenceRequired: Boolean(payment.paymentEvidenceRequired), paymentEvidencePresent: Boolean(payment.paymentEvidencePhoto), total, status: 'completed' } });
       if (allocations.length) await db.discountAuthorizations.bulkAdd(allocations.map(row => ({ transactionId, receiptNo, type: row.type, idNumber: row.idNumber, photo: row.photo, itemIndex: row.itemIndex, unitIndex: row.unitIndex, productName: row.productName, advertisedPercent: row.advertisedPercent, effectivePercent: row.effectivePercent, discountAmount: row.discountAmount, staffId: staff?.id, staffName: staff?.name, createdAt: Date.now() })));
       for (const item of freshItems) await deductRecipe(item, transactionId, receiptNo);
       await updateDailySalesSummary(saved);
