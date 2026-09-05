@@ -15,6 +15,7 @@ export default function ProductManagement() {
   const [products, setProducts] = useState([]); const [categories, setCategories] = useState([]); const [subcategories, setSubcategories] = useState([]);
   const [search, setSearch] = useState(''); const [categoryFilter, setCategoryFilter] = useState('All'); const [subCategoryFilter, setSubCategoryFilter] = useState('All');
   const [editing, setEditing] = useState(null); const [recipeProduct, setRecipeProduct] = useState(null); const [form, setForm] = useState(empty); const [sort, setSort] = useState({ field: 'name', direction: 1 });
+  const [deleting, setDeleting] = useState(null);
   const staff = useAuthStore(state => state.currentStaff); const toast = useToast();
   async function load() { const [rows, cats, subs] = await Promise.all([recalculateAllProductCosts(), db.categories.query({ orderBy: 'sortOrder' }), db.subcategories.query({ orderBy: 'sortOrder' })]); setProducts(rows); setCategories(cats); setSubcategories(subs); }
   useEffect(() => { load(); }, []);
@@ -29,7 +30,7 @@ export default function ProductManagement() {
       setEditing(null); await load(); toast('Product saved.');
     } catch { toast('Could not save product.', 'error'); }
   }
-  async function remove(product) { if (!window.confirm(`Delete ${product.name}?`)) return; await db.productIngredients.where('productId').equals(product.id).delete(); await db.productInventory.where('productId').equals(product.id).delete(); await db.products.delete(product.id); await writeAudit({ action: 'DELETE', entityType: 'product', entity: product.name, entityId: product.id, staff, beforeState: product }); await load(); }
+  async function remove(productOverride) { const product = productOverride || deleting; if (!deleting) { setDeleting(product); return; } await db.productIngredients.where('productId').equals(product.id).delete(); await db.productInventory.where('productId').equals(product.id).delete(); await db.products.delete(product.id); await writeAudit({ action: 'DELETE', entityType: 'product', entity: product.name, entityId: product.id, staff, beforeState: product }); setDeleting(null); await load(); }
   const categorySubs = categoryName => subcategories.filter(row => row.categoryId === categories.find(category => category.name === categoryName)?.id);
   const filtered = products.filter(product => (!search || product.name.toLowerCase().includes(search.toLowerCase())) && (categoryFilter === 'All' || product.category === categoryFilter) && (subCategoryFilter === 'All' || product.subCategory === subCategoryFilter)).sort((a, b) => {
     const get = row => sort.field === 'margin' ? profitMargin(row.price, row.cost) ?? -Infinity : row[sort.field]; const av = get(a); const bv = get(b); return (typeof av === 'number' ? av - Number(bv || 0) : String(av || '').localeCompare(String(bv || ''))) * sort.direction;
@@ -44,5 +45,6 @@ export default function ProductManagement() {
       <div className="form-row"><div className="form-group"><label>Price (₱)</label><input className="form-input" type="number" min="0" step=".01" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })}/></div><div className="form-group"><label>Calculated Recipe Cost (₱)</label><input className="form-input" value={form.cost || 0} readOnly/></div></div>
       <label className="checkbox-row"><input type="checkbox" checked={form.isAvailable} onChange={e => setForm({ ...form, isAvailable: e.target.checked })}/> Available for sale</label>
     </Modal>}
+    {deleting && <Modal title="Delete Product" onClose={() => setDeleting(null)} footer={<><button className="btn btn-secondary" onClick={() => setDeleting(null)}>Cancel</button><button className="btn btn-danger" onClick={() => remove()}>Delete</button></>}><p>Delete <strong>{deleting.name}</strong>? Historical transaction snapshots will be kept.</p></Modal>}
     {recipeProduct && <RecipeModal product={recipeProduct} onClose={async () => { setRecipeProduct(null); await load(); }}/>}</div>;
 }

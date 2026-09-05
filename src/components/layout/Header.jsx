@@ -27,7 +27,7 @@ export default function Header() {
   return (
     <header className="header">
       <div className="header-left">
-        <button className="btn btn-ghost btn-icon menu-toggle" onClick={toggleMobileMenu}>
+        <button className="btn btn-ghost btn-icon menu-toggle" onClick={toggleMobileMenu} aria-label="Open navigation">
           <Menu size={20} />
         </button>
         <h2>{title}</h2>
@@ -42,7 +42,7 @@ export default function Header() {
             <span className="role-badge">{currentStaff.role}</span>
           </div>
         )}
-        <button className="btn btn-ghost btn-icon" onClick={logout} title="Logout">
+        <button className="btn btn-ghost btn-icon" onClick={logout} aria-label="Log out">
           <LogOut size={18} />
         </button>
       </div>

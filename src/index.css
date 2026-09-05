@@ -1012,6 +1012,16 @@ button { -webkit-tap-highlight-color: transparent; }
 .card-header { gap: 12px; flex-wrap: wrap; }
 .toast-container { max-width: min(380px, calc(100vw - 24px)); }
 .toast { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.toast > span { flex: 1; }
+.toast-close { display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; padding: 5px; border-radius: 6px; }
+.queue-overlay { position: fixed; inset: 0; z-index: 899; border: 0; background: rgba(0,0,0,.48); cursor: default; }
+.pos-mobile-switch { display: none; }
+.app-loading, .startup-error { min-height: 100dvh; display: grid; place-content: center; gap: 14px; padding: 24px; text-align: center; background: var(--bg-primary); color: var(--text-primary); }
+.app-loading { color: var(--accent); font-family: 'Playfair Display', serif; font-size: 1.5rem; }
+.startup-error { max-width: none; }
+.startup-error p { color: var(--text-secondary); max-width: 600px; }
+.startup-error .btn { justify-self: center; }
+:where(button, input, select, textarea, a):focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 75%, white); outline-offset: 2px; }
 
 @media (max-width: 1200px) {
   .sidebar { height: 100dvh !important; max-height: 100dvh !important; margin: 0; }
@@ -1031,8 +1041,12 @@ button { -webkit-tap-highlight-color: transparent; }
 
 @media (max-width: 780px) {
   .pos-layout { flex-direction: column; height: calc(100dvh - var(--header-h) - 32px); margin: -16px; }
-  .pos-menu { flex: 1 1 54%; min-height: 0; height: auto; padding: 12px; }
-  .cart-panel { width: 100%; min-width: 0; height: auto; flex: 1 1 46%; border-left: 0; border-top: 2px solid var(--border); box-shadow: 0 -8px 24px rgba(0,0,0,.18); }
+  .pos-mobile-switch { display: grid; grid-template-columns: 1fr 1fr; flex: 0 0 auto; padding: 8px; gap: 6px; border-bottom: 1px solid var(--border); background: var(--bg-secondary); }
+  .pos-mobile-switch .tab { width: 100%; }
+  .pos-menu, .cart-panel { width: 100%; min-width: 0; height: auto; flex: 1 1 auto; }
+  .pos-menu { min-height: 0; padding: 12px; }
+  .cart-panel { border-left: 0; border-top: 0; box-shadow: none; }
+  .pos-layout.mobile-menu .cart-panel, .pos-layout.mobile-cart .pos-menu { display: none; }
   .cart-header { padding-block: 10px; }
   .order-type-row { padding-bottom: 8px; }
   .cart-summary { padding-block: 10px; }

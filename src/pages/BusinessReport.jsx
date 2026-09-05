@@ -55,12 +55,13 @@ export default function BusinessReport() {
 
   async function load() {
     const { start, end } = getRangeBounds(range, customStart, customEnd, lookbackAmount, lookbackUnit);
-    const [all, queue, queuedItems, discounts] = await Promise.all([db.transactions.query({
+    const [all, queue, discounts] = await Promise.all([db.transactions.queryAll({
       filters: getDateRangeFilters(start, end),
       orderBy: 'datetime',
       ascending: true,
-      limit: 5000,
-    }), db.orderQueue.query({ filters: getDateRangeFilters(start, end, 'queuedAt'), limit: 5000 }), db.orderQueueItems.toArray(), db.discountAuthorizations.toArray()]);
+    }), db.orderQueue.queryAll({ filters: getDateRangeFilters(start, end, 'queuedAt') }), db.discountAuthorizations.queryAll({ filters: getDateRangeFilters(start, end, 'createdAt') })]);
+    const queueIds = queue.map(row => row.id);
+    const queuedItems = queueIds.length ? await db.orderQueueItems.queryAll({ filters: [{ field: 'queueId', op: 'in', value: queueIds }] }) : [];
     setTxns(all);
     setQueueOrders(queue); setQueueItems(queuedItems); setDiscountRows(discounts);
     setStats(calcGrossProfit(all));

@@ -35,21 +35,25 @@ export async function loadCompletedQueue(start, end) {
 }
 
 async function loadQueueOrders(status, start, end) {
-  const filters = [{ field: 'status', op: 'eq', value: status }];
-  if (start) filters.push({ field: 'completedAt', op: 'gte', value: start });
-  if (end) filters.push({ field: 'completedAt', op: 'lte', value: end });
-  const orders = await db.orderQueue.query({ filters, orderBy: status === 'active' ? 'queuedAt' : 'completedAt', ascending: status === 'active' });
-  return Promise.all(orders.map(async order => ({ ...order, items: (await db.orderQueueItems.where('queueId').equals(order.id).toArray()).sort((a, b) => a.transactionItemIndex - b.transactionItemIndex || a.unitIndex - b.unitIndex) })));
+  let query = supabase.from('order_queue').select('*,order_queue_items(*)').eq('status', status);
+  if (start) query = query.gte('completedAt', start);
+  if (end) query = query.lte('completedAt', end);
+  query = query.order(status === 'active' ? 'queuedAt' : 'completedAt', { ascending: status === 'active' });
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(({ order_queue_items: items = [], ...order }) => ({
+    ...order,
+    items: items.sort((a, b) => a.transactionItemIndex - b.transactionItemIndex || a.unitIndex - b.unitIndex),
+  }));
 }
 
 export async function setQueueItemServed(item, served, queuedAt) {
-  const servedAt = served ? Date.now() : null;
-  await db.orderQueueItems.update(item.id, { served, servedAt, durationMs: served ? Math.max(0, servedAt - queuedAt) : null });
+  const row = (await db.rpc('set_queue_item_status', { p_item_id: item.id, p_served: served }))?.[0];
+  return { servedAt: row?.servedAt ?? null, durationMs: row?.durationMs ?? null };
 }
 
 export async function completeQueueOrder(order) {
-  const completedAt = Date.now();
-  await db.orderQueue.update(order.id, { status: 'completed', completedAt, durationMs: Math.max(0, completedAt - Number(order.queuedAt || completedAt)) });
+  return db.rpc('complete_queue_order', { p_queue_id: order.id });
 }
 
 export async function reconcileReservedQueue(checkoutKey) {

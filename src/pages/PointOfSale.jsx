@@ -20,6 +20,7 @@ import { activateQueue, cancelPager, markPagerHanded, reservePager } from '../ut
 import { adjustIngredientStock } from '../utils/stockAdjustments';
 import { recordIngredientMovement, updateDailySalesSummary } from '../utils/durability';
 import { writeAudit } from '../utils/audit';
+import { createConsumptionSnapshot } from '../utils/consumption';
 
 export default function PointOfSale() {
   const [products, setProducts] = useState([]); const [categories, setCategories] = useState([]); const [subcategories, setSubcategories] = useState([]);
@@ -27,6 +28,7 @@ export default function PointOfSale() {
   const [customizing, setCustomizing] = useState(null); const [discountOpen, setDiscountOpen] = useState(false); const [authorizations, setAuthorizations] = useState([]);
   const [reservation, setReservation] = useState(null); const [pagerConfirm, setPagerConfirm] = useState(false); const [showPayment, setShowPayment] = useState(false); const [processing, setProcessing] = useState(false);
   const [handoff, setHandoff] = useState(null); const [receipt, setReceipt] = useState(null); const [queueOpen, setQueueOpen] = useState(false); const [queueCount, setQueueCount] = useState(0); const [categoryManager, setCategoryManager] = useState(false);
+  const [mobilePane, setMobilePane] = useState('menu');
   const lock = useRef(false); const { cart, orderType, addItem, clearCart } = usePosStore(); const staff = useAuthStore(state => state.currentStaff); const toast = useToast();
 
   async function load() {
@@ -83,24 +85,34 @@ export default function PointOfSale() {
     }
   }
 
+  async function snapshotConsumption(item) {
+    const ingredientLinks = [...await db.productIngredients.where('productId').equals(item.productId).toArray()];
+    const inventoryLinks = [...await db.productInventory.where('productId').equals(item.productId).toArray()];
+    for (const modifier of item.modifiers || []) {
+      ingredientLinks.push(...await db.modifierOptionIngredients.where('optionId').equals(modifier.id).toArray());
+      inventoryLinks.push(...await db.modifierOptionInventory.where('optionId').equals(modifier.id).toArray());
+    }
+    const [ingredients, inventory] = await Promise.all([db.ingredients.toArray(), db.inventory.toArray()]);
+    return createConsumptionSnapshot({ ingredientLinks, inventoryLinks, ingredients, inventory, quantity: item.quantity });
+  }
+
   async function handlePayment(payment) {
     if (lock.current) return; lock.current = true; setProcessing(true);
     let transactionId = null;
     try {
       const freshItems = [];
-      for (const item of cart) {
+      for (let lineIndex = 0; lineIndex < cart.length; lineIndex += 1) {
+        const item = cart[lineIndex];
         const breakdown = await calculateProductCostBreakdown(item.productId); const modifierCost = (item.modifiers || []).reduce((sum, row) => sum + Number(row.cost || 0), 0);
-        freshItems.push({ ...item, materialCost: breakdown.materialCost, directLaborCost: breakdown.directLaborCost, modifierCost: roundMoney(modifierCost), baseCost: breakdown.total, cost: roundMoney(breakdown.total + modifierCost), configuredPrice: itemConfiguredPrice(item), note: (item.note || '').trim(), discountAllocations: allocations.filter(row => row.itemIndex === freshItems.length).map(({ unitIndex, type, idNumber, discountAmount }) => ({ unitIndex, type, idNumber, discountAmount })) });
+        freshItems.push({ ...item, lineIndex, materialCost: breakdown.materialCost, directLaborCost: breakdown.directLaborCost, modifierCost: roundMoney(modifierCost), baseCost: breakdown.total, cost: roundMoney(breakdown.total + modifierCost), configuredPrice: itemConfiguredPrice(item), note: (item.note || '').trim(), consumptionSnapshot: await snapshotConsumption(item), discountAllocations: allocations.filter(row => row.itemIndex === lineIndex).map(({ unitIndex, type, idNumber, discountAmount }) => ({ unitIndex, type, idNumber, discountAmount })) });
       }
       const receiptNo = generateReceiptNo();
       const transaction = { receiptNo, checkoutKey: reservation.checkoutKey, datetime: Date.now(), orderType, items: freshItems, paymentMethod: payment.method, paymentLines: [{ method: payment.method, amount: total }], subtotal, discountTotal, discountAuthorizationCount: allocations.length, total, cashReceived: payment.cashReceived, paymentEvidencePhoto: payment.paymentEvidencePhoto, paymentEvidenceRequired: Boolean(payment.paymentEvidenceRequired), staffId: staff?.id, staffName: staff?.name, status: 'completed' };
-      transactionId = await db.transactions.add(transaction); const saved = { ...transaction, id: transactionId };
-      await writeAudit({ action: 'CREATE', entityType: 'transaction', entity: receiptNo, entityId: transactionId, staff, afterState: { receiptNo, paymentMethod: payment.method, paymentEvidenceRequired: Boolean(payment.paymentEvidenceRequired), paymentEvidencePresent: Boolean(payment.paymentEvidencePhoto), total, status: 'completed' } });
-      if (allocations.length) await db.discountAuthorizations.bulkAdd(allocations.map(row => ({ transactionId, receiptNo, type: row.type, idNumber: row.idNumber, photo: row.photo, itemIndex: row.itemIndex, unitIndex: row.unitIndex, productName: row.productName, advertisedPercent: row.advertisedPercent, effectivePercent: row.effectivePercent, discountAmount: row.discountAmount, staffId: staff?.id, staffName: staff?.name, createdAt: Date.now() })));
-      for (const item of freshItems) await deductRecipe(item, transactionId, receiptNo);
-      await updateDailySalesSummary(saved);
-      const queue = await activateQueue({ reservation, transaction: saved, items: freshItems, staff });
-      await writeAudit({ action: 'CREATE', entityType: 'queue', entity: `Pager ${reservation.pagerNumber}`, entityId: queue.id, staff, afterState: { receiptNo, pagerNumber: reservation.pagerNumber, status: 'active' } });
+      const result = (await db.rpc('finalize_pos_checkout', { p_transaction: transaction, p_authorizations: allocations, p_checkout_key: reservation.checkoutKey }))?.[0];
+      if (!result) throw new Error('The database did not confirm checkout.');
+      transactionId = result.transaction_id;
+      const saved = { ...transaction, id: transactionId };
+      const queue = { ...reservation, id: result.queue_id, pagerNumber: result.pager_number, transactionId, receiptNo, status: 'active', queuedAt: result.queued_at };
       setShowPayment(false); setReservation(null); setAuthorizations([]); clearCart(); setHandoff({ queue, transaction: saved }); toast('Payment completed and order added to Queue.', 'success');
     } catch (error) {
       console.error(error); if (!transactionId && reservation) await cancelPager(reservation.checkoutKey); toast(error.message || 'Checkout failed.', 'error');
@@ -108,7 +120,8 @@ export default function PointOfSale() {
   }
   async function confirmHandoff() { await markPagerHanded(handoff.queue.id); setReceipt(handoff.transaction); setHandoff(null); setQueueCount(count => count + 1); setQueueOpen(true); }
 
-  return <div className="pos-layout">
+  return <div className={`pos-layout mobile-${mobilePane}`}>
+    <div className="pos-mobile-switch" role="tablist" aria-label="Point of sale view"><button role="tab" aria-selected={mobilePane === 'menu'} className={`tab ${mobilePane === 'menu' ? 'active' : ''}`} onClick={() => setMobilePane('menu')}>Menu</button><button role="tab" aria-selected={mobilePane === 'cart'} className={`tab ${mobilePane === 'cart' ? 'active' : ''}`} onClick={() => setMobilePane('cart')}>Cart ({cart.reduce((sum, item) => sum + item.quantity, 0)})</button></div>
     <main className="pos-menu"><div className="pos-toolbar"><div className="tabs"><button className={`tab ${category === 'All' ? 'active' : ''}`} onClick={() => { setCategory('All'); setSubCategory('All'); }}>All</button>{categories.map(row => <button key={row.id} className={`tab ${category === row.name ? 'active' : ''}`} onClick={() => { setCategory(row.name); setSubCategory('All'); }}>{row.name}</button>)}</div><div className="search-bar"><Search size={16}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"/></div>{staff?.role === 'owner' && <button className="btn btn-secondary btn-sm" onClick={() => setCategoryManager(true)}>Manage Categories</button>}</div>
       {visibleSubs.length > 0 && <div className="tabs subcategory-tabs"><button className={`tab ${subCategory === 'All' ? 'active' : ''}`} onClick={() => setSubCategory('All')}>All</button>{visibleSubs.map(row => <button key={row.id} className={`tab ${subCategory === row.name ? 'active' : ''}`} onClick={() => setSubCategory(row.name)}>{row.name}</button>)}</div>}
       <ProductGrid products={products} category={category} subCategory={subCategory} searchQuery={search} onAdd={chooseProduct}/>

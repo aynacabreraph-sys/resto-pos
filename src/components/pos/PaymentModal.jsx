@@ -39,7 +39,7 @@ export default function PaymentModal({ total, onConfirm, onClose, isProcessing =
       stopCamera();
       const media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640, height: 480 } });
       setStream(media); setError('');
-    } catch { setError(`Camera access is required for ${method} payments.`); }
+    } catch { setError(`Camera access is required for ${method}. Allow camera permission in browser settings, connect a camera, then retry.`); }
   }
   function captureEvidence() {
     const canvas = canvasRef.current;

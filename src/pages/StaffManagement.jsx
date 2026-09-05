@@ -15,6 +15,7 @@ export default function StaffManagement() {
   const [editing, setEditing] = useState(null); // 'new' or staff ID
   const [form, setForm] = useState(emptyForm);
   const [showPin, setShowPin] = useState(false);
+  const [deleting, setDeleting] = useState(null);
   const [capturing, setCapturing] = useState(false);
   const [stream, setStream] = useState(null);
   
@@ -39,25 +40,19 @@ export default function StaffManagement() {
   }
 
   function openEdit(s) {
-    setForm({ ...s, pin: s.pin || '' });
+    setForm({ ...s, pin: '' });
     setShowPin(false);
     setEditing(s.id);
   }
 
   async function save() {
-    if (!form.name || !form.role || !form.pin) {
+    if (!form.name || !form.role || (editing === 'new' && !form.pin)) {
       toast('Please fill all required fields', 'error');
       return;
     }
     
-    if (!/^\d{6}$/.test(form.pin)) {
-      toast('PIN must be exactly 6 digits', 'error');
-      return;
-    }
-
-    const existing = await db.staff.where('pin').equals(form.pin).first();
-    if (existing && existing.id !== editing) {
-      toast('This PIN is already in use by another staff member', 'error');
+    if (form.pin && !/^\d{6}$/.test(form.pin)) {
+      toast('A new PIN must be exactly 6 digits', 'error');
       return;
     }
     if (Number(form.hourlyRate || 0) < 0) {
@@ -67,7 +62,6 @@ export default function StaffManagement() {
 
     const data = { 
       name: form.name, 
-      pin: form.pin,
       role: form.role,
       hourlyRate: Number(form.hourlyRate || 0),
       profileImage: form.profileImage
@@ -75,12 +69,12 @@ export default function StaffManagement() {
 
     try {
       if (editing === 'new') {
-        const id = await db.staff.add(data);
+        const id = await db.rpc('save_staff_record', { p_id: null, p_name: data.name, p_role: data.role, p_hourly_rate: data.hourlyRate, p_profile_image: data.profileImage || null, p_pin: form.pin });
         await writeAudit({ action: 'CREATE', entityType: 'staff', entity: data.name, entityId: id, staff: currentStaff, afterState: data });
         toast('Staff member added successfully');
       } else {
         const before = await db.staff.get(editing);
-        await db.staff.update(editing, data);
+        await db.rpc('save_staff_record', { p_id: editing, p_name: data.name, p_role: data.role, p_hourly_rate: data.hourlyRate, p_profile_image: data.profileImage || null, p_pin: form.pin || null });
         await writeAudit({ action: 'UPDATE', entityType: 'staff', entity: data.name, entityId: editing, staff: currentStaff, beforeState: before, afterState: data });
         toast('Staff member updated successfully');
         
@@ -92,8 +86,8 @@ export default function StaffManagement() {
       
       setEditing(null);
       load();
-    } catch {
-      toast('Could not save staff member. Please check the connection.', 'error');
+    } catch (error) {
+      toast(error?.message || 'Could not save staff member.', 'error');
     }
   }
 
@@ -104,9 +98,9 @@ export default function StaffManagement() {
       return;
     }
 
-    if (!window.confirm('Are you sure you want to delete this staff member? This will not delete their past records.')) return;
-    
+    if (!deleting) { setDeleting(staff.find(person => person.id === id)); return; }
     await db.staff.delete(id);
+    setDeleting(null);
     toast('Staff member removed', 'info');
     load();
   }
@@ -182,7 +176,7 @@ export default function StaffManagement() {
                   </span>
                 </td>
                 <td style={{ fontWeight: 500 }}>{formatCurrency(s.hourlyRate || 0)}/hr</td>
-                <td style={{ fontFamily: 'monospace', letterSpacing: s.pin ? 2 : 0 }}>{s.pin ? '••••••' : 'No PIN'}</td>
+                <td style={{ fontFamily: 'monospace', letterSpacing: s.hasPin ? 2 : 0 }}>{s.hasPin ? '••••••' : 'No PIN'}</td>
                 <td>
                   <div className="flex gap-8">
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => openEdit(s)} title="Edit">
@@ -289,6 +283,8 @@ export default function StaffManagement() {
           )}
         </Modal>
       )}
+
+      {deleting && <Modal title="Delete Staff Member" onClose={() => setDeleting(null)} footer={<><button className="btn btn-secondary" onClick={() => setDeleting(null)}>Cancel</button><button className="btn btn-danger" onClick={() => remove(deleting.id)}>Delete</button></>}><p>Delete <strong>{deleting.name}</strong>? Their historical records will remain.</p></Modal>}
 
       {capturing && (
         <Modal title="Capture Profile Photo" onClose={stopCapture} footer={

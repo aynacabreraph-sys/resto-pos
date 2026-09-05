@@ -1,5 +1,5 @@
 import React, { useState, useCallback, createContext, useContext } from 'react';
-import { CheckCircle, XCircle, Info } from 'lucide-react';
+import { CheckCircle, XCircle, Info, X } from 'lucide-react';
 
 const ToastContext = createContext();
 
@@ -11,7 +11,7 @@ export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
 
   const addToast = useCallback((message, type = 'success') => {
-    const id = Date.now();
+    const id = `${Date.now()}-${Math.random()}`;
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   }, []);
@@ -21,10 +21,10 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={addToast}>
       {children}
-      <div className="toast-container">
+      <div className="toast-container" aria-live="polite" aria-atomic="false">
         {toasts.map(t => (
-          <div key={t.id} className={`toast toast-${t.type}`}>
-            {icons[t.type]}{t.message}
+          <div key={t.id} className={`toast toast-${t.type}`} role={t.type === 'error' ? 'alert' : 'status'}>
+            {icons[t.type]}<span>{t.message}</span><button className="toast-close" aria-label="Dismiss notification" onClick={() => setToasts(prev => prev.filter(row => row.id !== t.id))}><X size={14}/></button>
           </div>
         ))}
       </div>

@@ -25,9 +25,17 @@ export async function recalculateProductCost(productId) {
 }
 
 export async function recalculateAllProductCosts() {
-  const products = await db.products.toArray();
-  await Promise.all(products.map(product => recalculateProductCost(product.id)));
-  return db.products.toArray();
+  const [products, ingredientLinks, inventoryLinks, ingredients, inventory] = await Promise.all([
+    db.products.toArray(), db.productIngredients.toArray(), db.productInventory.toArray(),
+    db.ingredients.toArray(), db.inventory.toArray(),
+  ]);
+  const next = products.map(product => {
+    const ingredientCost = recipeComponentCost(ingredientLinks.filter(link => link.productId === product.id), ingredients, 'ingredientId', 'unitCost');
+    const inventoryCost = recipeComponentCost(inventoryLinks.filter(link => link.productId === product.id), inventory, 'inventoryId', 'cost');
+    return { ...product, cost: productCostBreakdown(ingredientCost, inventoryCost, product.directLaborCost || 0).total };
+  });
+  await Promise.all(next.filter((product, index) => Number(product.cost) !== Number(products[index].cost)).map(product => db.products.update(product.id, { cost: product.cost })));
+  return next;
 }
 
 export async function loadModifierGroups(productId, activeOnly = true) {

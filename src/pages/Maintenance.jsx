@@ -5,6 +5,7 @@ import { downloadJson, toBusinessDate } from '../utils/durability';
 import { branding } from '../config/branding';
 import { useToast } from '../components/common/Toast';
 import { formatCurrency, formatDateTime } from '../utils/formatters';
+import { sanitizeBackup } from '../utils/security';
 
 const TABLES = [
   ['staff', db.staff],
@@ -98,7 +99,7 @@ export default function Maintenance() {
   async function exportAll() {
     setExporting(true);
     try {
-      const entries = await Promise.all(TABLES.map(async ([name, table]) => [name, await table.toArray()]));
+      const entries = await Promise.all(TABLES.map(async ([name, table]) => [name, sanitizeBackup(await table.toArray())]));
       downloadJson(`${branding.appName.toLowerCase().replace(/\s+/g, '')}-backup-${toBusinessDate()}.json`, {
         exportedAt: new Date().toISOString(),
         version: '1.0',
@@ -135,7 +136,7 @@ export default function Maintenance() {
           <div className="card-header">
             <div className="card-title"><Database size={18} style={{ verticalAlign: 'text-bottom', marginRight: 8 }} /> Data Backup</div>
           </div>
-          <p className="text-sm text-muted mb-16">Export a full JSON backup of operational tables for off-site storage.</p>
+          <p className="text-sm text-muted mb-16">Export an operational JSON backup. PIN hashes and all photo bodies are automatically redacted.</p>
           <button className="btn btn-primary" onClick={exportAll} disabled={exporting}>
             <Download size={16} /> {exporting ? 'Exporting...' : 'Export Full Backup'}
           </button>

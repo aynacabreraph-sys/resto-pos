@@ -4,6 +4,14 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
+export async function ensureDeviceSession() {
+  const { data } = await supabase.auth.getSession();
+  if (data.session) return data.session;
+  const { data: signedIn, error } = await supabase.auth.signInAnonymously();
+  if (error) throw new Error('Enable anonymous sign-ins in Supabase Authentication before using the POS.');
+  return signedIn.session;
+}
+
 function applyFilters(query, filters = []) {
   return filters.reduce((q, filter) => {
     const { field, op, value } = filter;
@@ -13,6 +21,7 @@ function applyFilters(query, filters = []) {
     if (op === 'gt') return q.gt(field, value);
     if (op === 'lt') return q.lt(field, value);
     if (op === 'ilike') return q.ilike(field, value);
+    if (op === 'in') return q.in(field, value);
     return q;
   }, query);
 }
@@ -28,7 +37,7 @@ function buildTable(tableName) {
   return {
     async toArray() {
       const { data, error } = await supabase.from(tableName).select('*');
-      if (error) console.error(`Error fetching ${tableName}:`, error);
+      handleMutationError(tableName, 'fetching', error);
       return data || [];
     },
     async query({ select = '*', filters = [], orderBy, ascending = true, limit, offset = 0 } = {}) {
@@ -36,8 +45,17 @@ function buildTable(tableName) {
       if (orderBy) query = query.order(orderBy, { ascending });
       if (typeof limit === 'number') query = query.range(offset, offset + limit - 1);
       const { data, error } = await query;
-      if (error) console.error(`Error querying ${tableName}:`, error);
+      handleMutationError(tableName, 'querying', error);
       return data || [];
+    },
+    async queryAll(options = {}, pageSize = 1000) {
+      const rows = [];
+      const stableOptions = options.orderBy ? options : { ...options, orderBy: 'id', ascending: true };
+      for (let offset = 0; ; offset += pageSize) {
+        const page = await this.query({ ...stableOptions, limit: pageSize, offset });
+        rows.push(...page);
+        if (page.length < pageSize) return rows;
+      }
     },
     async add(obj) {
       // Remove id to let PostgreSQL auto-increment
@@ -61,23 +79,25 @@ function buildTable(tableName) {
     },
     async get(id) {
       const { data, error } = await supabase.from(tableName).select('*').eq('id', id).single();
-      if (error) console.error(`Error getting from ${tableName}:`, error);
+      if (error?.code === 'PGRST116') return null;
+      handleMutationError(tableName, 'getting from', error);
       return data;
     },
     async count() {
       const { count, error } = await supabase.from(tableName).select('*', { count: 'exact', head: true });
-      if (error) console.error(`Error counting ${tableName}:`, error);
+      handleMutationError(tableName, 'counting', error);
       return count || 0;
     },
     async filteredCount(filters = []) {
       const { count, error } = await applyFilters(supabase.from(tableName).select('*', { count: 'exact', head: true }), filters);
-      if (error) console.error(`Error counting ${tableName}:`, error);
+      handleMutationError(tableName, 'counting', error);
       return count || 0;
     },
     async bulkAdd(arr) {
       const cleanArr = arr.map(({id, ...rest}) => rest);
+      if (!cleanArr.length) return;
       const { error } = await supabase.from(tableName).insert(cleanArr);
-      if (error) console.error(`Error bulk adding to ${tableName}:`, error);
+      handleMutationError(tableName, 'bulk adding to', error);
     },
     where(field) {
       return {
@@ -85,12 +105,12 @@ function buildTable(tableName) {
           return {
             async first() {
               const { data, error } = await supabase.from(tableName).select('*').eq(field, value).limit(1);
-              if (error) console.error(`Error where.equals.first on ${tableName}:`, error);
+              handleMutationError(tableName, 'filtering', error);
               return data?.[0] || null;
             },
             async toArray() {
               const { data, error } = await supabase.from(tableName).select('*').eq(field, value);
-              if (error) console.error(`Error where.equals.toArray on ${tableName}:`, error);
+              handleMutationError(tableName, 'filtering', error);
               return data || [];
             },
             async delete() {
@@ -103,7 +123,7 @@ function buildTable(tableName) {
           return {
             async toArray() {
               const { data, error } = await supabase.from(tableName).select('*').gt(field, value);
-              if (error) console.error(`Error where.above.toArray on ${tableName}:`, error);
+              handleMutationError(tableName, 'filtering', error);
               return data || [];
             }
           }
@@ -114,7 +134,7 @@ function buildTable(tableName) {
 }
 
 const db = {
-  staff: buildTable('staff'),
+  staff: buildTable('staff_directory'),
   categories: buildTable('categories'),
   subcategories: buildTable('subcategories'),
   customers: buildTable('customers'),

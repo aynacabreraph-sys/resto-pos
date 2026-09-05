@@ -5,6 +5,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { writeAudit } from '../../utils/audit';
 import { formatDateTime } from '../../utils/formatters';
 import { shiftDateValue } from '../../utils/dateNavigation';
+import Modal from '../common/Modal';
 
 function elapsedLabel(ms) {
   const total = Math.max(0, Math.floor(Number(ms || 0) / 1000));
@@ -23,6 +24,7 @@ export default function QueuePanel({ open, onClose, onCountChange }) {
   const [archiveDate, setArchiveDate] = useState(localDateValue());
   const [search, setSearch] = useState('');
   const [now, setNow] = useState(Date.now());
+  const [completionCandidate, setCompletionCandidate] = useState(null);
   const staff = useAuthStore(state => state.currentStaff);
 
   async function refresh() {
@@ -31,17 +33,25 @@ export default function QueuePanel({ open, onClose, onCountChange }) {
     if (tab === 'active') setOrders(active);
     else { const [start, end] = dateBounds(archiveDate); setOrders(await loadCompletedQueue(start, end)); }
   }
-  useEffect(() => { refresh(); const loadTimer = setInterval(refresh, 5000); return () => clearInterval(loadTimer); }, [tab, archiveDate]);
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  useEffect(() => {
+    const updateCount = () => import('../../db/database').then(({ default: db }) => db.orderQueue.filteredCount([{ field: 'status', op: 'eq', value: 'active' }])).then(count => onCountChange?.(count)).catch(() => {});
+    updateCount(); const countTimer = setInterval(updateCount, 15000); return () => clearInterval(countTimer);
+  }, [onCountChange]);
+  useEffect(() => { if (!open) return undefined; refresh(); const loadTimer = setInterval(refresh, 5000); return () => clearInterval(loadTimer); }, [open, tab, archiveDate]);
+  useEffect(() => { if (!open) return undefined; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [open]);
 
   async function toggle(order, item) {
     await setQueueItemServed(item, !item.served, order.queuedAt);
     const nextItems = order.items.map(row => row.id === item.id ? { ...row, served: !item.served, servedAt: !item.served ? Date.now() : null } : row);
-    if (nextItems.every(row => row.served) && window.confirm(`All items for pager ${order.pagerNumber} are served. Remove this order from Queue?`)) {
-      await completeQueueOrder({ ...order, items: nextItems });
-      await writeAudit({ action: 'UPDATE', entityType: 'queue', entity: `Pager ${order.pagerNumber}`, entityId: order.id, staff, beforeState: { status: 'active' }, afterState: { status: 'completed' } });
-    }
+    if (nextItems.every(row => row.served)) setCompletionCandidate({ ...order, items: nextItems });
     await refresh();
+  }
+
+  async function confirmCompletion() {
+    const order = completionCandidate;
+    await completeQueueOrder(order);
+    await writeAudit({ action: 'UPDATE', entityType: 'queue', entity: `Pager ${order.pagerNumber}`, entityId: order.id, staff, beforeState: { status: 'active' }, afterState: { status: 'completed' } });
+    setCompletionCandidate(null); await refresh();
   }
 
   const visibleOrders = useMemo(() => {
@@ -51,8 +61,8 @@ export default function QueuePanel({ open, onClose, onCountChange }) {
   }, [orders, search]);
 
   if (!open) return null;
-  return <aside className="queue-panel">
-    <div className="queue-panel-header"><div><h3>Order Queue</h3><div className="tabs queue-tabs"><button className={`tab ${tab === 'active' ? 'active' : ''}`} onClick={() => setTab('active')}>Active</button><button className={`tab ${tab === 'completed' ? 'active' : ''}`} onClick={() => setTab('completed')}>Completed</button></div></div><button className="btn btn-ghost btn-icon" onClick={onClose}><X size={20}/></button></div>
+  return <><button className="queue-overlay" aria-label="Close order queue" onClick={onClose}/><aside className="queue-panel" role="dialog" aria-modal="true" aria-label="Order queue">
+    <div className="queue-panel-header"><div><h3>Order Queue</h3><div className="tabs queue-tabs"><button className={`tab ${tab === 'active' ? 'active' : ''}`} onClick={() => setTab('active')}>Active</button><button className={`tab ${tab === 'completed' ? 'active' : ''}`} onClick={() => setTab('completed')}>Completed</button></div></div><button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close order queue"><X size={20}/></button></div>
     {tab === 'completed' && <div className="queue-archive-tools"><button className="btn btn-secondary btn-sm" onClick={() => setArchiveDate(value => shiftDateValue(value, -1))}>Previous</button><input className="form-input" type="date" value={archiveDate} onChange={event => setArchiveDate(event.target.value)}/><button className="btn btn-secondary btn-sm" onClick={() => setArchiveDate(value => shiftDateValue(value, 1))}>Next</button></div>}
     <div className="search-bar queue-search"><Search size={16}/><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search pager, receipt, product…"/></div>
     <div className="queue-order-list">{visibleOrders.map(order => {
@@ -64,5 +74,6 @@ export default function QueuePanel({ open, onClose, onCountChange }) {
         {order.items.map(item => tab === 'active' ? <button key={item.id} className={`queue-check ${item.served ? 'served' : ''}`} onClick={() => toggle(order, item)}><span className="queue-checkbox">{item.served && <Check size={16}/>}</span><span>{item.name}{item.modifiers?.length ? ` — ${item.modifiers.map(modifier => modifier.name).join(', ')}` : ''}</span><small>{elapsedLabel(item.served ? item.durationMs : elapsed)}</small></button> : <div key={item.id} className="queue-archive-item"><span><Check size={14}/></span><div><strong>{item.name}</strong>{item.modifiers?.length > 0 && <small>{item.modifiers.map(modifier => modifier.name).join(', ')}</small>}</div><div><strong>{elapsedLabel(item.durationMs)}</strong><small>{item.servedAt ? formatDateTime(item.servedAt) : 'Not recorded'}</small></div></div>)}
       </section>;
     })}{visibleOrders.length === 0 && <div className="empty-state"><p>{tab === 'active' ? 'No active orders' : 'No completed orders for this date'}</p></div>}</div>
-  </aside>;
+    {completionCandidate && <Modal title="Complete Queue Order" onClose={() => setCompletionCandidate(null)} footer={<><button className="btn btn-secondary" onClick={() => setCompletionCandidate(null)}>Keep Active</button><button className="btn btn-primary" onClick={confirmCompletion}>Complete Pager {completionCandidate.pagerNumber}</button></>}><p>All items have been served. Complete this order and release pager {completionCandidate.pagerNumber}?</p></Modal>}
+  </aside></>;
 }

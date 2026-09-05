@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Ban, Trash2, Eye, Receipt, Download } from 'lucide-react';
+import { Search, Ban, Eye, Receipt, Download } from 'lucide-react';
 import db from '../db/database';
 import Modal from '../components/common/Modal';
 import ReceiptModal from '../components/pos/ReceiptModal';
@@ -75,13 +75,13 @@ export default function TransactionReport() {
 
   useEffect(() => { db.staff.toArray().then(setStaff); }, []);
   useEffect(() => { setPage(0); }, [range, customStart, customEnd, paymentFilter, statusFilter, staffFilter, search]);
-  useEffect(() => { load(); }, [page, range, customStart, customEnd, paymentFilter, statusFilter, staffFilter]);
+  useEffect(() => { load(); }, [range, customStart, customEnd, statusFilter, staffFilter]);
   async function load() {
     const { start, end } = getRangeBounds(range, customStart, customEnd);
     const filters = getDateRangeFilters(start, end);
     if (statusFilter !== 'All') filters.push({ field: 'status', op: 'eq', value: statusFilter });
     if (staffFilter !== 'All') filters.push({ field: 'staffId', op: 'eq', value: Number(staffFilter) });
-    setTxns(await db.transactions.query({ filters, orderBy: 'datetime', ascending: false, limit: PAGE_SIZE, offset: page * PAGE_SIZE }));
+    setTxns(await db.transactions.queryAll({ filters, orderBy: 'datetime', ascending: false }));
   }
   async function openDetails(transaction) {
     const queue = await db.orderQueue.where('transactionId').equals(transaction.id).first();
@@ -129,56 +129,14 @@ export default function TransactionReport() {
 
   async function handleVoid() {
     try {
-      const employee = await db.staff.where('pin').equals(managerPin).first();
-      if (!employee || employee.id !== currentStaff?.id) {
-        setVoidError('Enter your own six-digit employee PIN.');
-        return;
-      }
-
       const txn = showVoid;
-      await db.transactions.update(txn.id, { status: 'void' });
-      await db.voidLog.add({
-        transactionId: txn.id, receiptNo: txn.receiptNo, reason: voidReason,
-        staffId: employee.id, staffName: employee.name, datetime: Date.now(),
-        originalData: JSON.parse(JSON.stringify(txn)),
-      });
-      await reverseDailySalesSummary(txn);
-      await restoreTransactionIngredients(txn, employee, 'voided');
-      await writeAudit({ action: 'VOID', entityType: 'transaction', entity: txn.receiptNo, entityId: txn.id, staff: employee, beforeState: { status: txn.status }, afterState: { status: 'void' }, details: `Voided by ${employee.name}: ${voidReason}` });
+      await db.rpc('void_pos_transaction', { p_transaction_id: txn.id, p_staff_id: currentStaff?.id, p_pin: managerPin, p_reason: voidReason });
       toast('Transaction voided');
       setShowVoid(null); setVoidReason(''); setManagerPin(''); setVoidError('');
       setSelected(null); load();
     } catch (error) {
       console.error('Void failed:', error);
-      setVoidError('Could not void transaction. Please check the connection and try again.');
-    }
-  }
-
-  async function deleteTransaction(txn) {
-    if (!isOwner) return;
-    if (!window.confirm(`Delete transaction ${txn.receiptNo}? This removes the record and reverses stock/report totals if it was completed.`)) return;
-    try {
-      if (txn.status !== 'void') {
-        await reverseDailySalesSummary(txn);
-        await restoreTransactionIngredients(txn, currentStaff, 'deleted transaction');
-      }
-      await db.voidLog.where('transactionId').equals(txn.id).delete();
-      await db.transactions.delete(txn.id);
-      await db.auditLog.add({
-        action: 'DELETE_TRANSACTION',
-        entity: txn.receiptNo,
-        entityId: txn.id,
-        staffId: currentStaff?.id,
-        staffName: currentStaff?.name,
-        datetime: Date.now(),
-        details: `Deleted transaction ${txn.receiptNo}`
-      });
-      toast('Transaction deleted', 'info');
-      setSelected(null);
-      load();
-    } catch (error) {
-      console.error('Delete transaction failed:', error);
-      toast('Could not delete transaction. Please check the connection.', 'error');
+      setVoidError(error?.message || 'Could not void transaction. Please check the connection and try again.');
     }
   }
 
@@ -198,6 +156,7 @@ export default function TransactionReport() {
   const totalDiscounts = completed.reduce((sum, transaction) => sum + Number(transaction.discountTotal || 0), 0);
   const paymentTotals = buildPaymentTotals(completed);
   const paymentOptions = ['All', ...PAYMENT_METHODS];
+  const displayed = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   function exportFiltered() {
     downloadJson(`transactions-${Date.now()}.json`, {
@@ -272,7 +231,7 @@ export default function TransactionReport() {
         <table className="data-table">
           <thead><tr><th>Date / Time</th><th>Receipt #</th><th>Type</th><th>Items</th><th>Payment</th><th>Staff</th><th>Discount</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>
-            {filtered.map(t => (
+            {displayed.map(t => (
               <tr key={t.id}>
                 <td><div>{formatDate(t.datetime)}</div><div className="text-muted text-sm">{formatTime(t.datetime)}</div></td>
                 <td style={{ fontWeight: 600, color: 'var(--accent)' }}>{t.receiptNo}</td>
@@ -288,7 +247,6 @@ export default function TransactionReport() {
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => openDetails(t)} title="View"><Eye size={14} /></button>
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setShowReceipt(t)} title="Receipt"><Receipt size={14} /></button>
                     {t.status !== 'void' && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setShowVoid(t)} title="Void"><Ban size={14} /></button>}
-                    {isOwner && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => deleteTransaction(t)} title="Delete"><Trash2 size={14} /></button>}
                   </div>
                 </td>
               </tr>
@@ -300,13 +258,12 @@ export default function TransactionReport() {
       <div className="pagination">
         <button className="btn btn-secondary btn-sm" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>Previous</button>
         <span className="text-sm text-muted">Page {page + 1}</span>
-        <button className="btn btn-secondary btn-sm" onClick={() => setPage(p => p + 1)} disabled={txns.length < PAGE_SIZE}>Next</button>
+        <button className="btn btn-secondary btn-sm" onClick={() => setPage(p => p + 1)} disabled={(page + 1) * PAGE_SIZE >= filtered.length}>Next</button>
       </div>
 
       {selected && (
         <Modal title={`Transaction ${selected.receiptNo}`} large onClose={() => setSelected(null)} footer={
           <>
-            {isOwner && <button className="btn btn-danger" onClick={() => deleteTransaction(selected)}><Trash2 size={14} /> Delete</button>}
             {selected.status !== 'void' && <button className="btn btn-danger" onClick={() => { setShowVoid(selected); setSelected(null); }}><Ban size={14} /> Void</button>}
             <button className="btn btn-secondary" onClick={() => { setShowReceipt(selected); setSelected(null); }}>View Receipt</button>
             <button className="btn btn-primary" onClick={() => setSelected(null)}>Close</button>

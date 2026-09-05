@@ -10,7 +10,9 @@ export default function LoginScreen() {
 
   const submitPin = useCallback(async (value) => {
     if (value.length !== 6) return;
-    const staff = await db.staff.where('pin').equals(value).first();
+    let staff = null;
+    try { staff = (await db.rpc('authenticate_staff', { p_pin: value }))?.[0] || null; }
+    catch { setError('Login service unavailable'); return; }
     if (staff?.role === 'staff') {
       setError('This profile is for time tracking only');
       setTimeout(() => { setPin(''); setError(''); }, 1200);
@@ -27,14 +29,9 @@ export default function LoginScreen() {
     const newPin = pin + key;
     setPin(newPin);
     if (newPin.length === 6) {
-      const staff = await db.staff.where('pin').equals(newPin).first();
-      if (staff?.role === 'staff') {
-        setError('This profile is for time tracking only');
-        setTimeout(() => { setPin(''); setError(''); }, 1200);
-      } else if (staff) { login(staff); }
-      else { setError('Invalid PIN'); setTimeout(() => { setPin(''); setError(''); }, 1000); }
+      await submitPin(newPin);
     }
-  }, [login, pin, submitPin]);
+  }, [pin, submitPin]);
 
   useEffect(() => {
     const onKeyDown = (event) => {

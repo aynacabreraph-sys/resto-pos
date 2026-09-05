@@ -114,17 +114,13 @@ export default function TimeTracking() {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 320, height: 240 } });
       setStream(s);
       setTimeout(() => { if (videoRef.current) videoRef.current.srcObject = s; }, 100);
-    } catch { toast('Camera access denied', 'error'); setCapturing(null); }
+    } catch { toast('Camera unavailable. Allow camera access in browser settings, connect a camera, then retry.', 'error'); setCapturing(null); }
   }
 
   async function confirmPin() {
     if (!pinPrompt) return;
-    const selected = staff.find(s => s.id === pinPrompt.staffId);
-    if (!selected?.pin) {
-      setPinError('This profile needs a PIN before time tracking.');
-      return;
-    }
-    if (pinValue !== selected.pin) {
+    const verified = await db.rpc('verify_staff_pin', { p_staff_id: pinPrompt.staffId, p_pin: pinValue });
+    if (!verified) {
       setPinError('Invalid PIN');
       setPinValue('');
       return;

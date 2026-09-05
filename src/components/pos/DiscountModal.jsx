@@ -9,7 +9,7 @@ export default function DiscountModal({ authorizations, onChange, maxCount, onCl
   const videoRef = useRef(null); const canvasRef = useRef(null);
   async function startCamera() {
     try { const media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640, height: 480 } }); setStream(media); setTimeout(() => { if (videoRef.current) videoRef.current.srcObject = media; }, 50); }
-    catch { setError('Camera access is required to apply this discount.'); }
+    catch { setError('Camera access is required. Allow camera permission in browser settings, connect a camera, then retry.'); }
   }
   function stop() { stream?.getTracks().forEach(track => track.stop()); setStream(null); }
   function capture() { const canvas = canvasRef.current; canvas.width = 640; canvas.height = 480; canvas.getContext('2d').drawImage(videoRef.current, 0, 0, 640, 480); setForm(current => ({ ...current, photo: canvas.toDataURL('image/jpeg', .72) })); stop(); }

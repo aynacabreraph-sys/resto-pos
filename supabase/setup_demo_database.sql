@@ -1,11 +1,14 @@
 -- Run this ONCE in a brand-new Supabase project (SQL Editor → New query → Run).
 -- It creates empty tables. The app fills in demo staff + menu on first open.
+-- Apply every file in supabase/migrations afterward; the final hardening migration
+-- installs hashed PIN login, authenticated POS sessions, and atomic checkout.
 
 -- Core tables
 create table if not exists public.staff (
   id bigserial primary key,
   name text not null,
   pin text,
+  "pinHash" text,
   role text not null default 'cashier',
   "hourlyRate" numeric(12,2) not null default 0,
   "profileImage" text
